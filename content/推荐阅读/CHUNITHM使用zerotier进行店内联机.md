@@ -26,7 +26,7 @@
 
 ### 第一步：安装 ZeroTier 客户端
 所有需要参与联机的设备（1P、2P、3P、4P）均需下载并安装客户端。
-* **下载链接**：[ZeroTier_ne.msi 下载](https://download.zerotier.com/dist/ZeroTier_ne.msi)
+* **下载链接**：[ZeroTier_ne.msi 下载](https://download.zerotier.com/dist/ZeroTier%20One.msi)
 * **说明**：保持默认设置安装即可。安装完毕后打开软件，暂时先不管它。
 
 ---
