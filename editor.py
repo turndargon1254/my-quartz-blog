@@ -1,11 +1,11 @@
 import os
 import threading
+import subprocess
 import tkinter as tk
 from tkinter import messagebox, filedialog
 from tkinter import ttk as standard_ttk
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-from git import Repo, GitCommandError
 
 class QuartzEditorApp:
     def __init__(self, root):
@@ -13,12 +13,13 @@ class QuartzEditorApp:
         self.root.title("Quartz Markdown Manager & Publisher")
         self.root.geometry("1100x800")
 
-        # 状态变量
+        # 状态变量（默认 Quartz 目录）
         self.quartz_path = tk.StringVar(value=r"D:\Desktop\quartz")
         self.current_file_path = None
 
         self._setup_ui()
-        # 启动时如果默认路径存在，自动加载文件树
+        
+        # 启动时若路径存在自动加载文章树
         if os.path.exists(self.quartz_path.get()):
             self.load_markdown_files()
 
@@ -106,7 +107,7 @@ class QuartzEditorApp:
         self.log("就绪。准备执行构建或推送任务。")
 
     def log(self, message):
-        """向日志终端追加文本"""
+        """向日志终端追加文本并滚动到底部"""
         self.log_box.insert(tk.END, f"{message}\n")
         self.log_box.see(tk.END)
 
@@ -186,11 +187,11 @@ class QuartzEditorApp:
             messagebox.showerror("保存失败", f"写入文件出现错误: {e}")
 
     def start_git_push_thread(self):
-        """使用线程启动 Git 逻辑，防止 GUI 卡死"""
+        """使用后台线程启动 Git 逻辑，防止 GUI 界面冻结"""
         threading.Thread(target=self.run_bat_push_logic, daemon=True).start()
 
     def run_bat_push_logic(self):
-        """完全对应批处理 (BAT) 逻辑的 Python 实现"""
+        """使用系统 subprocess 执行原生 git 命令（稳定且不报 connection reset）"""
         repo_path = self.quartz_path.get()
         if not repo_path or not os.path.exists(os.path.join(repo_path, ".git")):
             messagebox.showerror("Git 错误", "指定的 Quartz 路径不是有效的 Git 仓库！")
@@ -200,38 +201,51 @@ class QuartzEditorApp:
 
         # 禁用按钮防止重复点击
         self.btn_push.config(state=DISABLED, text="⌛ 推送中...")
-        
-        try:
-            repo = Repo(repo_path)
 
+        def run_cmd(cmd):
+            """管道方式实时捕获命令行输出"""
+            process = subprocess.Popen(
+                cmd,
+                cwd=repo_path,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
+            for line in process.stdout:
+                line_str = line.strip()
+                if line_str:
+                    self.log(line_str)
+            process.wait()
+            return process.returncode
+
+        try:
             # [1/3] Adding changes...
             self.log("\n[1/3] Adding changes...")
-            repo.git.add(A=True)
+            run_cmd("git add .")
 
             # [2/3] Committing changes...
             self.log(f"[2/3] Committing changes with msg: '{commit_msg}'...")
-            if repo.is_dirty(index=True, working_tree=True):
-                repo.index.commit(commit_msg)
-            else:
-                self.log("ℹ️  没有发现新改动/新文件，跳过 commit 阶段...")
+            run_cmd(f'git commit -m "{commit_msg}"')
 
             # [3/3] Pushing to GitHub...
-            self.log("[3/3] Pushing to GitHub (origin/main)...")
-            origin = repo.remote(name='origin')
-            push_info = origin.push(refspec='main:main')
+            self.log("[3/3] Pushing to GitHub (origin main)...")
+            exit_code = run_cmd("git push origin main")
 
-            self.log("\n====================================")
-            self.log(" Success! Cloudflare is building.")
-            self.log("====================================\n")
-            
-            messagebox.showinfo("成功", "推送完成！Cloudflare Pages 已收到通知并开始自动构建部署。")
+            if exit_code == 0:
+                self.log("\n====================================")
+                self.log(" Success! Cloudflare is building.")
+                self.log("====================================\n")
+                messagebox.showinfo("成功", "推送完成！Cloudflare Pages 已收到通知并开始自动构建部署。")
+            else:
+                self.log("\n❌ 推送失败！请查看下方日志输出。")
+                messagebox.showerror("推送失败", "Git 推送过程中抛出异常，请检查控制台网络提示。")
 
-        except GitCommandError as g_err:
-            self.log(f"\n❌ Git 执行错误: {g_err}")
-            messagebox.showerror("Git 错误", f"提交或推送失败:\n{g_err}")
         except Exception as e:
             self.log(f"\n❌ 未知异常: {e}")
-            messagebox.showerror("错误", f"发生异常: {e}")
+            messagebox.showerror("错误", f"发生未预期的异常: {e}")
         finally:
             # 恢复按钮状态
             self.btn_push.config(state=NORMAL, text="🚀 一键提交并推送 (Auto Push)")
