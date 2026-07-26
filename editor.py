@@ -1,290 +1,242 @@
 import os
-import json
-import subprocess
+import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
-import customtkinter as ctk
+from tkinter import messagebox, filedialog
+from tkinter import ttk as standard_ttk
+import ttkbootstrap as ttk
+from ttkbootstrap.constants import *
+from git import Repo, GitCommandError
 
-try:
-    import webview
-except ImportError:
-    print("错误: 请先在终端运行 pip install pywebview")
-    exit(1)
+class QuartzEditorApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Quartz Markdown Manager & Publisher")
+        self.root.geometry("1100x800")
 
-# 设置界面主题风格
-ctk.set_appearance_mode("System")
-ctk.set_default_color_theme("blue")
+        # 状态变量
+        self.quartz_path = tk.StringVar(value=r"D:\Desktop\quartz")
+        self.current_file_path = None
 
-# HTML 模板：引入了业界顶尖的 Vditor 块级/所见即所得 Markdown 编辑器 (与 Notion / WordPress 极其相似)
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8" />
-    <link rel="stylesheet" href="https://unpkg.com/vditor@3.9.6/dist/index.css" />
-    <script src="https://unpkg.com/vditor@3.9.6/dist/index.min.js"></script>
-    <style>
-        body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        #vditor { height: 100vh !important; border: none !important; }
-        .vditor-toolbar { border-bottom: 1px solid #e1e4e8 !important; background-color: #fafbfc !important; }
-    </style>
-</head>
-<body>
-    <div id="vditor"></div>
-    <script>
-        let vditor;
-        window.addEventListener('DOMContentLoaded', () => {
-            vditor = new Vditor('vditor', {
-                height: '100vh',
-                mode: 'wysiwyg', // 所见即所得模式 (WordPress 风格)
-                toolbar: [
-                    'emoji', 'headings', 'bold', 'italic', 'strike', 'link', '|',
-                    'list', 'ordered-list', 'check', 'outdent', 'indent', '|',
-                    'quote', 'line', 'code', 'inline-code', 'insert-before', 'insert-after', '|',
-                    'upload', 'record', 'table', '|',
-                    'undo', 'redo', '|',
-                    'edit-mode', 'content-theme', 'code-theme', 'outline', 'preview'
-                ],
-                cache: { enable: false },
-                placeholder: '开始像 WordPress 一样输入或粘贴内容吧...',
-            });
-        });
+        self._setup_ui()
+        # 启动时如果默认路径存在，自动加载文件树
+        if os.path.exists(self.quartz_path.get()):
+            self.load_markdown_files()
 
-        // 供 Python 调用的接口
-        function setContent(markdown) {
-            if (vditor) {
-                vditor.setValue(markdown);
-            } else {
-                setTimeout(() => setContent(markdown), 200);
-            }
-        }
+    def _setup_ui(self):
+        # 顶栏: 目录选择器
+        top_frame = ttk.Frame(self.root, padding=10)
+        top_frame.pack(fill=X)
 
-        function getContent() {
-            return vditor ? vditor.getValue() : '';
-        }
-    </script>
-</body>
-</html>
-"""
+        ttk.Label(top_frame, text="Quartz 根目录:").pack(side=LEFT, padx=(0, 5))
+        path_entry = ttk.Entry(top_frame, textvariable=self.quartz_path, width=60)
+        path_entry.pack(side=LEFT, padx=5, fill=X, expand=True)
 
-class API:
-    """ Python 与 JS 通信 bridge """
-    def __init__(self):
-        self._window = None
+        ttk.Button(top_frame, text="浏览...", command=self.browse_folder, bootstyle=SECONDARY).pack(side=LEFT, padx=5)
+        ttk.Button(top_frame, text="加载文章", command=self.load_markdown_files, bootstyle=PRIMARY).pack(side=LEFT, padx=5)
 
-    def set_window(self, window):
-        self._window = window
+        # 主界面分割 (左侧文件树，右侧编辑器)
+        paned = standard_ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        paned.pack(fill=BOTH, expand=True, padx=10, pady=5)
 
-class QuartzWPEditor(ctk.CTk):
-    def __init__(self, content_dir):
-        super().__init__()
+        # 1. 左侧文件树 Frame
+        left_frame = ttk.Labelframe(paned, text="文章列表 (content 目录)", padding=5)
+        paned.add(left_frame, weight=1)
 
-        self.content_dir = os.path.abspath(content_dir)
-        self.current_filepath = None
+        self.tree = ttk.Treeview(left_frame, show="tree", selectmode="browse")
+        self.tree.pack(fill=BOTH, expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self.on_file_selected)
 
-        self.title("Quartz 博客 - WordPress 风格可视化编辑器")
-        self.geometry("1280 x 780")
+        # 2. 右侧编辑区 Frame
+        right_frame = ttk.Labelframe(paned, text="编辑区域", padding=5)
+        paned.add(right_frame, weight=3)
 
-        # 布局定义
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        # 编辑器工具栏
+        editor_toolbar = ttk.Frame(right_frame)
+        editor_toolbar.pack(fill=X, pady=(0, 5))
 
-        # ------------------ 左侧栏：目录与功能 ------------------
-        self.sidebar_frame = ctk.CTkFrame(self, width=260, corner_radius=0)
-        self.sidebar_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        self.lbl_current_file = ttk.Label(editor_toolbar, text="未选择文件", font=("Helvetica", 9, "italic"))
+        self.lbl_current_file.pack(side=LEFT, padx=5)
 
-        self.label_sidebar = ctk.CTkLabel(self.sidebar_frame, text="📑 文章列表", font=ctk.CTkFont(size=16, weight="bold"))
-        self.label_sidebar.pack(pady=10, padx=10, anchor="w")
+        ttk.Button(editor_toolbar, text="💾 保存本地", command=self.save_file, bootstyle=SUCCESS).pack(side=RIGHT, padx=5)
 
-        # 文件目录树
-        self.tree = ttk.Treeview(self.sidebar_frame, show="tree")
-        self.tree.pack(fill="both", expand=True, padx=5, pady=5)
-        self.tree.bind("<<TreeviewSelect>>", self.on_file_select)
-
-        # 刷新与发布按钮
-        self.btn_refresh = ctk.CTkButton(self.sidebar_frame, text="🔄 刷新文件目录", command=self.load_file_tree)
-        self.btn_refresh.pack(fill="x", padx=10, pady=5)
-
-        self.btn_push = ctk.CTkButton(
-            self.sidebar_frame, 
-            text="🚀 一键更新并推送至 GitHub", 
-            fg_color="#28a745", 
-            hover_color="#218838",
-            command=self.push_to_github
+        # 文本编辑器主体
+        self.text_editor = tk.Text(
+            right_frame, 
+            wrap=tk.WORD, 
+            font=("Consolas", 11), 
+            undo=True, 
+            bg="#1e1e1e", 
+            fg="#d4d4d4",
+            insertbackground="white" # 光标颜色
         )
-        self.btn_push.pack(fill="x", padx=10, pady=10)
+        self.text_editor.pack(fill=BOTH, expand=True)
 
-        # ------------------ 右侧栏：文章与富文本编辑 ------------------
-        self.main_frame = ctk.CTkFrame(self)
-        self.main_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
-        self.main_frame.grid_columnconfigure(1, weight=1)
-        self.main_frame.grid_rowconfigure(3, weight=1)
+        # 底栏: Git 操作区 & 日志框
+        bottom_frame = ttk.Labelframe(self.root, text="Git 构建 & 上传控制台", padding=10)
+        bottom_frame.pack(fill=X, padx=10, pady=(5, 10))
 
-        # 标题栏
-        self.lbl_title = ctk.CTkLabel(self.main_frame, text="文章标题:")
-        self.lbl_title.grid(row=0, column=0, padx=10, pady=5, sticky="e")
-        self.entry_title = ctk.CTkEntry(self.main_frame, placeholder_text="输入文章标题...")
-        self.entry_title.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+        # 工具条 (Commit 输入框 + 运行按钮)
+        action_bar = ttk.Frame(bottom_frame)
+        action_bar.pack(fill=X, pady=(0, 5))
 
-        # 标签与草稿
-        self.lbl_tags = ctk.CTkLabel(self.main_frame, text="标签分类:")
-        self.lbl_tags.grid(row=1, column=0, padx=10, pady=5, sticky="e")
-        self.entry_tags = ctk.CTkEntry(self.main_frame, placeholder_text="多个标签用逗号隔开")
-        self.entry_tags.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
+        ttk.Label(action_bar, text="Commit 信息:").pack(side=LEFT, padx=(0, 5))
+        self.commit_msg_entry = ttk.Entry(action_bar, width=35)
+        self.commit_msg_entry.insert(0, "Auto update blog")
+        self.commit_msg_entry.pack(side=LEFT, padx=5)
 
-        self.chk_draft_var = ctk.BooleanVar(value=False)
-        self.chk_draft = ctk.CTkCheckBox(self.main_frame, text="存为草稿 (不发布)", variable=self.chk_draft_var)
-        self.chk_draft.grid(row=1, column=2, padx=10, pady=5)
-
-        # 保存按钮
-        self.btn_save = ctk.CTkButton(self.main_frame, text="💾 保存页面", command=self.save_current_file)
-        self.btn_save.grid(row=0, column=2, padx=10, pady=5)
-
-        # 网页编辑器容器 (Webview 宿主)
-        self.web_container = ctk.CTkFrame(self.main_frame)
-        self.web_container.grid(row=3, column=0, columnspan=3, padx=5, pady=5, sticky="nsew")
-
-        # 初始化编辑器引擎
-        self.api = API()
-        self.web_window = None
-
-        # 初始化加载
-        self.load_file_tree()
-        self.after(500, self.embed_webview)
-
-    def embed_webview(self):
-        """ 将 PyWebView 嵌入到 GUI 编辑框区域 """
-        # 在临时文件夹里生成带有所见即所得编辑器的 HTML
-        temp_html_path = os.path.join(os.path.dirname(self.content_dir), "editor_tmp.html")
-        with open(temp_html_path, "w", encoding="utf-8") as f:
-            f.write(HTML_TEMPLATE)
-
-        # 启动嵌入式 Chrome/Edge 内核
-        self.web_window = webview.create_window(
-            'Editor',
-            url=f"file:///{temp_html_path}",
-            js_api=self.api,
-            frameless=True
+        # 核心一键部署按钮 (整合 BAT 逻辑)
+        self.btn_push = ttk.Button(
+            action_bar, 
+            text="🚀 一键提交并推送 (Auto Push)", 
+            command=self.start_git_push_thread, 
+            bootstyle=DANGER
         )
-        self.api.set_window(self.web_window)
+        self.btn_push.pack(side=RIGHT, padx=5)
 
-        # 将 webview 绑定在 GUI 上
-        webview.start(gui='tkinter', debug=False)
+        # 运行日志终端框
+        self.log_box = tk.Text(
+            bottom_frame, 
+            height=6, 
+            bg="#0d1117", 
+            fg="#00ff66", 
+            font=("Consolas", 9),
+            wrap=tk.WORD
+        )
+        self.log_box.pack(fill=X, expand=True)
+        self.log("就绪。准备执行构建或推送任务。")
 
-    def load_file_tree(self):
-        """ 扫描 content 目录 """
+    def log(self, message):
+        """向日志终端追加文本"""
+        self.log_box.insert(tk.END, f"{message}\n")
+        self.log_box.see(tk.END)
+
+    def browse_folder(self):
+        """选择 Quartz 项目根目录"""
+        folder = filedialog.askdirectory(title="选择 Quartz 项目根路径")
+        if folder:
+            self.quartz_path.set(folder)
+            self.load_markdown_files()
+
+    def load_markdown_files(self):
+        """扫描 content 目录下的所有 .md 文件并渲染树状结构"""
+        base_dir = self.quartz_path.get()
+        if not base_dir or not os.path.exists(base_dir):
+            messagebox.showerror("错误", "请先选择有效的 Quartz 根目录！")
+            return
+
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        if not os.path.exists(self.content_dir):
+        content_dir = os.path.join(base_dir, "content")
+        target_dir = content_dir if os.path.exists(content_dir) else base_dir
+
+        def add_nodes(parent, path):
+            try:
+                for entry in sorted(os.listdir(path)):
+                    full_path = os.path.join(path, entry)
+                    if os.path.isdir(full_path):
+                        if entry in ['.git', 'node_modules', '.quartz']:
+                            continue
+                        node = self.tree.insert(parent, "end", text=f"📁 {entry}", open=False)
+                        add_nodes(node, full_path)
+                    elif entry.endswith(".md"):
+                        self.tree.insert(parent, "end", text=f"📄 {entry}", values=(full_path,))
+            except PermissionError:
+                pass
+
+        root_node = self.tree.insert("", "end", text=os.path.basename(target_dir), open=True)
+        add_nodes(root_node, target_dir)
+        self.log(f"已加载文章列表：{target_dir}")
+
+    def on_file_selected(self, event):
+        """选中左侧列表的文件时，载入内容到右侧编辑器"""
+        selected_items = self.tree.selection()
+        if not selected_items:
             return
 
-        def add_node(parent_node, path):
-            for entry in os.scandir(path):
-                if entry.is_dir():
-                    node = self.tree.insert(parent_node, "end", text=f"📁 {entry.name}", open=True)
-                    add_node(node, entry.path)
-                elif entry.name.endswith(".md"):
-                    self.tree.insert(parent_node, "end", text=f"📄 {entry.name}", values=[entry.path])
+        item = selected_items[0]
+        values = self.tree.item(item, "values")
 
-        root_node = self.tree.insert("", "end", text="content (根目录)", open=True)
-        add_node(root_node, self.content_dir)
+        if values:
+            file_path = values[0]
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
 
-    def on_file_select(self, event):
-        """ 选择文章时加载所见即所得内容 """
-        selected = self.tree.selection()
-        if not selected:
+                self.text_editor.delete("1.0", tk.END)
+                self.text_editor.insert("1.0", content)
+                self.current_file_path = file_path
+                self.lbl_current_file.config(text=f"当前正在编辑: {os.path.basename(file_path)}")
+            except Exception as e:
+                messagebox.showerror("读取错误", f"无法打开文件: {e}")
+
+    def save_file(self):
+        """保存编辑器内容到本地 markdown 文件"""
+        if not self.current_file_path:
+            messagebox.showwarning("警告", "请先在左侧选择要保存的文件！")
             return
 
-        values = self.tree.item(selected[0], "values")
-        if not values:
-            return
-
-        filepath = values[0]
-        self.current_filepath = filepath
-        self.read_markdown_file(filepath)
-
-    def read_markdown_file(self, filepath):
-        """ 解析 Frontmatter 并将正文注入所见即所得编辑器 """
-        with open(filepath, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        title, tags, is_draft, body = "", "", False, content
-
-        if content.startswith("---"):
-            parts = content.split("---", 2)
-            if len(parts) >= 3:
-                header = parts[1]
-                body = parts[2].lstrip()
-                for line in header.splitlines():
-                    if line.startswith("title:"):
-                        title = line.replace("title:", "").strip().strip('"').strip("'")
-                    elif line.startswith("tags:"):
-                        tags = line.replace("tags:", "").strip()
-                    elif line.startswith("draft:"):
-                        is_draft = "true" in line.lower()
-
-        self.entry_title.delete(0, tk.END)
-        self.entry_title.insert(0, title)
-
-        self.entry_tags.delete(0, tk.END)
-        self.entry_tags.insert(0, tags)
-
-        self.chk_draft_var.set(is_draft)
-
-        # 转换为 JS 转义字符串并注入富文本编辑器
-        if self.web_window:
-            escaped_body = json.dumps(body)
-            self.web_window.evaluate_js(f"setContent({escaped_body})")
-
-    def save_current_file(self):
-        """ 从富文本编辑器获取渲染好的内容并保存 """
-        if not self.current_filepath:
-            messagebox.showwarning("提示", "请先在左侧选择要修改的文章！")
-            return
-
-        title = self.entry_title.get().strip()
-        tags = self.entry_tags.get().strip()
-        is_draft = self.chk_draft_var.get()
-
-        # 从 JS 编辑器获取 Markdown
-        body = self.web_window.evaluate_js("getContent()") if self.web_window else ""
-
-        frontmatter = "---\n"
-        if title:
-            frontmatter += f'title: "{title}"\n'
-        if tags:
-            frontmatter += f"tags: [{tags}]\n"
-        frontmatter += f"draft: {'true' if is_draft else 'false'}\n"
-        frontmatter += "---\n\n"
-
-        full_content = frontmatter + body
-
+        content = self.text_editor.get("1.0", tk.END)
         try:
-            with open(self.current_filepath, "w", encoding="utf-8") as f:
-                f.write(full_content)
-            messagebox.showinfo("成功", f"文章已保存！")
+            with open(self.current_file_path, "w", encoding="utf-8") as f:
+                f.write(content.rstrip() + "\n")
+            self.log(f"💾 文件已保存: {os.path.basename(self.current_file_path)}")
+            messagebox.showinfo("成功", "文件保存成功！")
         except Exception as e:
-            messagebox.showerror("保存失败", str(e))
+            messagebox.showerror("保存失败", f"写入文件出现错误: {e}")
 
-    def push_to_github(self):
-        """ 自动化 Git 提交与推送 """
-        quartz_dir = os.path.dirname(self.content_dir)
+    def start_git_push_thread(self):
+        """使用线程启动 Git 逻辑，防止 GUI 卡死"""
+        threading.Thread(target=self.run_bat_push_logic, daemon=True).start()
 
+    def run_bat_push_logic(self):
+        """完全对应批处理 (BAT) 逻辑的 Python 实现"""
+        repo_path = self.quartz_path.get()
+        if not repo_path or not os.path.exists(os.path.join(repo_path, ".git")):
+            messagebox.showerror("Git 错误", "指定的 Quartz 路径不是有效的 Git 仓库！")
+            return
+
+        commit_msg = self.commit_msg_entry.get().strip() or "Auto update blog"
+
+        # 禁用按钮防止重复点击
+        self.btn_push.config(state=DISABLED, text="⌛ 推送中...")
+        
         try:
-            subprocess.run(["git", "add", "."], cwd=quartz_dir, check=True)
-            subprocess.run(["git", "commit", "-m", "Auto update via WordPress-style Editor"], cwd=quartz_dir, check=True)
-            result = subprocess.run(["git", "push", "origin", "main"], cwd=quartz_dir, capture_output=True, text=True)
+            repo = Repo(repo_path)
 
-            if result.returncode == 0:
-                messagebox.showinfo("发布成功 🚀", "已成功推送至 GitHub！\nCloudflare Pages 正在自动构建你的最新博客页面。")
+            # [1/3] Adding changes...
+            self.log("\n[1/3] Adding changes...")
+            repo.git.add(A=True)
+
+            # [2/3] Committing changes...
+            self.log(f"[2/3] Committing changes with msg: '{commit_msg}'...")
+            if repo.is_dirty(index=True, working_tree=True):
+                repo.index.commit(commit_msg)
             else:
-                messagebox.showerror("推送失败", result.stderr)
+                self.log("ℹ️  没有发现新改动/新文件，跳过 commit 阶段...")
 
-        except subprocess.CalledProcessError:
-            messagebox.showwarning("提示", "未能提交变更（可能当前没有任何新改动）。")
+            # [3/3] Pushing to GitHub...
+            self.log("[3/3] Pushing to GitHub (origin/main)...")
+            origin = repo.remote(name='origin')
+            push_info = origin.push(refspec='main:main')
+
+            self.log("\n====================================")
+            self.log(" Success! Cloudflare is building.")
+            self.log("====================================\n")
+            
+            messagebox.showinfo("成功", "推送完成！Cloudflare Pages 已收到通知并开始自动构建部署。")
+
+        except GitCommandError as g_err:
+            self.log(f"\n❌ Git 执行错误: {g_err}")
+            messagebox.showerror("Git 错误", f"提交或推送失败:\n{g_err}")
+        except Exception as e:
+            self.log(f"\n❌ 未知异常: {e}")
+            messagebox.showerror("错误", f"发生异常: {e}")
+        finally:
+            # 恢复按钮状态
+            self.btn_push.config(state=NORMAL, text="🚀 一键提交并推送 (Auto Push)")
 
 if __name__ == "__main__":
-    CONTENT_DIRECTORY = r"D:\Desktop\quartz\content"
-    app = QuartzWPEditor(content_dir=CONTENT_DIRECTORY)
-    app.mainloop()
+    app_root = ttk.Window(themename="darkly")
+    app = QuartzEditorApp(app_root)
+    app_root.mainloop()
