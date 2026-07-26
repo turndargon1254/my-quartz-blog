@@ -1,0 +1,49 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="https://unpkg.com/vditor@3.9.6/dist/index.css" />
+    <script src="https://unpkg.com/vditor@3.9.6/dist/index.min.js"></script>
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        #vditor { height: 100vh !important; border: none !important; }
+        .vditor-toolbar { border-bottom: 1px solid #e1e4e8 !important; background-color: #fafbfc !important; }
+    </style>
+</head>
+<body>
+    <div id="vditor"></div>
+    <script>
+        let vditor;
+        window.addEventListener('DOMContentLoaded', () => {
+            vditor = new Vditor('vditor', {
+                height: '100vh',
+                mode: 'wysiwyg', // 所见即所得模式 (WordPress 风格)
+                toolbar: [
+                    'emoji', 'headings', 'bold', 'italic', 'strike', 'link', '|',
+                    'list', 'ordered-list', 'check', 'outdent', 'indent', '|',
+                    'quote', 'line', 'code', 'inline-code', 'insert-before', 'insert-after', '|',
+                    'upload', 'record', 'table', '|',
+                    'undo', 'redo', '|',
+                    'edit-mode', 'content-theme', 'code-theme', 'outline', 'preview'
+                ],
+                cache: { enable: false },
+                placeholder: '开始像 WordPress 一样输入或粘贴内容吧...',
+            });
+        });
+
+        // 供 Python 调用的接口
+        function setContent(markdown) {
+            if (vditor) {
+                vditor.setValue(markdown);
+            } else {
+                setTimeout(() => setContent(markdown), 200);
+            }
+        }
+
+        function getContent() {
+            return vditor ? vditor.getValue() : '';
+        }
+    </script>
+</body>
+</html>
