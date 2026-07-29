@@ -36,5 +36,5 @@ draft: false
 
 ## 找到我
 
-- GitHub: https://github.com/turndargon1254（没什么代码，主要存配置和笔记）
+- GitHub（没什么代码，主要存配置和笔记）: https://github.com/turndargon1254
 - 邮箱: turndargon@hotmail.com
