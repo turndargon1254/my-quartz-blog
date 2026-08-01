@@ -324,4 +324,4 @@ nohup python3 mc_log_listener.py > /tmp/mc_listener.log 2>&1 &
 
 > 🔗 **相关链接与延伸**：
 > * 返回 [[index|🌿 数字花园首页]]
-> * 查阅 [[关于这个博客的搭建与数字花园理念|关于本站的技术选型与构建思考]]
+> * 查阅 [[commend/aboutsite|关于本站的技术选型与构建思考]]
