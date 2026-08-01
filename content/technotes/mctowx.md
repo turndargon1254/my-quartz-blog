@@ -80,7 +80,7 @@ draft: false
 
 最终落地的系统架构如下所示，全链路只保留最精简、最稳健的节点：
 
-![流程]（https://raw.gitcode.com/turndargon1254/sdfzmc/raw/main/process.png）
+![流程](https://raw.gitcode.com/turndargon1254/sdfzmc/raw/main/process.png)
 
 ---
 
@@ -194,7 +194,7 @@ import requests
 # Minecraft 服务器日志文件的绝对路径
 LOG_FILE_PATH = "/root/minecraft/logs/latest.log"
 # 本地微信桥接服务的 API 地址
-BRIDGE_API_URL = "[http://127.0.0.1:9999/wxSend](http://127.0.0.1:9999/wxSend)"
+BRIDGE_API_URL = "http://127.0.0.1:9999/wxSend"
 # ====================================================
 
 def parse_and_listen():
@@ -298,7 +298,7 @@ nohup python3 mc_log_listener.py > /tmp/mc_listener.log 2>&1 &
 ```
 
 ---
-![最终效果]（https://raw.gitcode.com/turndargon1254/sdfzmc/raw/main/result.png）
+![最终效果](https://raw.gitcode.com/turndargon1254/sdfzmc/raw/main/result.png)
 ## ❓ FAQ 常见故障排查表
 
 | 故障现象 | 常见原因 | 解决方法 |
