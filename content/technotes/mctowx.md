@@ -1,6 +1,6 @@
 ---
-title: "绝地求生：Minecraft ↔ 微信 跨平台消息桥接折腾全记录"
-tags: [推荐阅读,技术笔记,Minecraft, Linux, 自动化, Python, 架构设计, 踩坑复盘, 数字花园]
+title: "Minecraft -> 微信 跨平台机器人消息桥接折腾全记录"
+tags: [技术笔记,Minecraft, Linux, 自动化, Python, 架构设计, 踩坑复盘, 数字花园]
 date: 2026-08-02
 draft: false
 ---
