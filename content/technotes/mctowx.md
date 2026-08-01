@@ -326,7 +326,7 @@ nohup python3 mc_log_listener.py > /tmp/mc_listener.log 2>&1 &
 ```
 
 ---
-最终效果（https://raw.gitcode.com/turndargon1254/sdfzmc/raw/main/result.png）
+[最终效果]（https://raw.gitcode.com/turndargon1254/sdfzmc/raw/main/result.png）
 ## ❓ FAQ 常见故障排查表
 
 | 故障现象 | 常见原因 | 解决方法 |
