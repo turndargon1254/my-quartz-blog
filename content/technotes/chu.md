@@ -1,6 +1,7 @@
 ---
 title: "CHUNITHM使用ZeroTier进行店内联机配置教程"
 tags: [知识图谱, 中二节奏, 技术]
+date: 2026-07-27
 draft: false
 ---
 

@@ -1,6 +1,7 @@
 ---
 title: "关于这个博客是怎么搭的"
 tags: [博客, Quartz, Cloudflare, 搭建过程]
+date: 2026-07-26
 draft: false
 ---
 

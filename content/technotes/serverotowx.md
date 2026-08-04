@@ -1,6 +1,7 @@
 ---
 title: "使用系统剪切板与wechat-decrypt实现只在QQ出现过的'群服互联'"
 tags: [技术笔记,Minecraft, Linux, 自动化, Python, 架构设计, 踩坑复盘,群服互联]
+date: 2026-08-03
 draft: false
 ---
 
