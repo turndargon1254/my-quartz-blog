@@ -100,7 +100,7 @@ draft: false
 
 | 指令 | 微信返回 |
 | :--- | :--- |
-| `/list` | `目前有 3 位玩家在线：\nSteve\nAlex\nHerobrine` |
+| `/list` | 目前有 3 位玩家在线：<br>Steve<br>Alex<br>Herobrine|
 | `/kick Steve` | `✅ 已踢出 Steve` |
 | `/gamemode 1 Steve` | `✅ 已将 Steve 模式调整为 创造` |
 | `/weather clear` | `✅ 已将天气调为 晴天` |
@@ -168,16 +168,1231 @@ draft: false
 - 通过 RCON 协议执行指令或广播消息
 - 将指令执行结果发送回微信群
 
+```python
+#!/usr/bin/env python3
+"""
+SimpFun MC ↔ 微信 双向桥接服务
+配置从 config.ini 读取
+"""
+
+import sys
+import io
+import os
+import time
+import re
+import json
+import threading
+import logging
+import subprocess
+import socket
+import struct
+import configparser
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.request import urlopen, Request
+from urllib.error import URLError
+
+import paramiko
+import requests
+
+# ==================== 读取配置 ====================
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.ini')
+
+config = configparser.ConfigParser()
+if os.path.exists(CONFIG_FILE):
+    config.read(CONFIG_FILE, encoding='utf-8')
+else:
+    print(f"❌ 配置文件不存在: {CONFIG_FILE}")
+    sys.exit(1)
+
+# SFTP配置
+SFTP_HOST = config.get('SFTP', 'host')
+SFTP_PORT = config.getint('SFTP', 'port')
+SFTP_USER = config.get('SFTP', 'user')
+SFTP_PASS = config.get('SFTP', 'password')
+REMOTE_LOG_PATH = config.get('SFTP', 'remote_log_path')
+
+# RCON配置
+RCON_HOST = config.get('RCON', 'host')
+RCON_PORT = config.getint('RCON', 'port')
+RCON_PASS = config.get('RCON', 'password')
+
+# 微信配置
+WECHAT_API_URL = config.get('WECHAT', 'api_url')
+WECHAT_BRIDGE_URL = config.get('WECHAT', 'bridge_url')
+TARGET_GROUP = config.get('WECHAT', 'target_group')
+EXCLUDE_SENDERS = set(config.get('WECHAT', 'exclude_senders').replace(' ', '').split(','))
+
+# 管理员配置
+ADMIN_USERS = set(config.get('ADMIN', 'users').replace(' ', '').split(','))
+PUBLIC_COMMANDS = set(config.get('ADMIN', 'public_commands').replace(' ', '').split(','))
+
+# 缓存配置
+CACHE_FILE = config.get('CACHE', 'file')
+
+# 延迟配置
+DELAYS = {
+    'window_activate': config.getfloat('DELAYS', 'window_activate'),
+    'click_input': config.getfloat('DELAYS', 'click_input'),
+    'paste_wait': config.getfloat('DELAYS', 'paste_wait'),
+    'send_wait': config.getfloat('DELAYS', 'send_wait'),
+    'retry_interval': config.getfloat('DELAYS', 'retry_interval'),
+}
+
+# ==================== 关闭第三方库日志 ====================
+logging.getLogger("paramiko").setLevel(logging.WARNING)
+logging.getLogger("paramiko.transport").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
+
+# ==================== 日志配置 ====================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("mc_wechat_bridge")
+
+# ==================== 配置热加载 ====================
+
+def reload_config():
+    """重新加载配置文件"""
+    global SFTP_HOST, SFTP_PORT, SFTP_USER, SFTP_PASS, REMOTE_LOG_PATH
+    global RCON_HOST, RCON_PORT, RCON_PASS
+    global WECHAT_API_URL, WECHAT_BRIDGE_URL, TARGET_GROUP, EXCLUDE_SENDERS
+    global ADMIN_USERS, PUBLIC_COMMANDS, CACHE_FILE, DELAYS
+    
+    try:
+        config.read(CONFIG_FILE, encoding='utf-8')
+        
+        SFTP_HOST = config.get('SFTP', 'host')
+        SFTP_PORT = config.getint('SFTP', 'port')
+        SFTP_USER = config.get('SFTP', 'user')
+        SFTP_PASS = config.get('SFTP', 'password')
+        REMOTE_LOG_PATH = config.get('SFTP', 'remote_log_path')
+        
+        RCON_HOST = config.get('RCON', 'host')
+        RCON_PORT = config.getint('RCON', 'port')
+        RCON_PASS = config.get('RCON', 'password')
+        
+        WECHAT_API_URL = config.get('WECHAT', 'api_url')
+        WECHAT_BRIDGE_URL = config.get('WECHAT', 'bridge_url')
+        TARGET_GROUP = config.get('WECHAT', 'target_group')
+        EXCLUDE_SENDERS = set(config.get('WECHAT', 'exclude_senders').replace(' ', '').split(','))
+        
+        ADMIN_USERS = set(config.get('ADMIN', 'users').replace(' ', '').split(','))
+        PUBLIC_COMMANDS = set(config.get('ADMIN', 'public_commands').replace(' ', '').split(','))
+        
+        CACHE_FILE = config.get('CACHE', 'file')
+        
+        DELAYS = {
+            'window_activate': config.getfloat('DELAYS', 'window_activate'),
+            'click_input': config.getfloat('DELAYS', 'click_input'),
+            'paste_wait': config.getfloat('DELAYS', 'paste_wait'),
+            'send_wait': config.getfloat('DELAYS', 'send_wait'),
+            'retry_interval': config.getfloat('DELAYS', 'retry_interval'),
+        }
+        
+        logger.info("✅ 配置已重新加载")
+        return True
+    except Exception as e:
+        logger.error(f"❌ 配置重新加载失败: {e}")
+        return False
+
+# ==================== RCON 直连方式 ====================
+
+def rcon_command(cmd: str) -> str:
+    """执行RCON指令，直接socket连接"""
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(10)
+        sock.connect((RCON_HOST, RCON_PORT))
+        
+        packet = struct.pack('<ii', 0, 3) + RCON_PASS.encode('utf-8') + b'\x00\x00'
+        packet = struct.pack('<i', len(packet)) + packet
+        sock.send(packet)
+        
+        length_data = sock.recv(4)
+        if len(length_data) < 4:
+            return None
+        length = struct.unpack('<i', length_data)[0]
+        response = sock.recv(length)
+        request_id, packet_type = struct.unpack('<ii', response[:8])
+        
+        if packet_type != 2:
+            return None
+        
+        packet = struct.pack('<ii', 0, 2) + cmd.encode('utf-8') + b'\x00\x00'
+        packet = struct.pack('<i', len(packet)) + packet
+        sock.send(packet)
+        
+        length_data = sock.recv(4)
+        if len(length_data) < 4:
+            return None
+        length = struct.unpack('<i', length_data)[0]
+        response = sock.recv(length)
+        
+        body = response[8:-2].decode('utf-8', errors='ignore') if len(response) > 10 else ''
+        return body
+        
+    except Exception as e:
+        logger.error(f"RCON错误: {e}")
+        return None
+    finally:
+        if sock:
+            try:
+                sock.close()
+            except:
+                pass
+
+# ==================== 颜色代码清理 ====================
+COLOR_CODE_PATTERN = re.compile(r'¡ì[0-9a-fk-or]')
+CHAT_PATTERN = re.compile(r'<(?P<player>[^>]+)>\s+(?P<message>.+)')
+
+def clean_text(text: str) -> str:
+    return COLOR_CODE_PATTERN.sub('', text).strip()
+
+# ==================== 图片检测 ====================
+IMAGE_PATTERNS = [
+    re.compile(r'\[图片\]', re.IGNORECASE),
+    re.compile(r'\[Image\]', re.IGNORECASE),
+    re.compile(r'\[图\]', re.IGNORECASE),
+    re.compile(r'\[照片\]', re.IGNORECASE),
+    re.compile(r'<image>', re.IGNORECASE),
+    re.compile(r'<img[^>]*>', re.IGNORECASE),
+    re.compile(r'^\s*$'),
+    re.compile(r'^[\u200b\u200c\u200d\ufeff]+$'),
+]
+
+IMAGE_TYPE_VALUES = {'image', 'img', 'picture', 'photo', 'pic'}
+
+def is_image_message(item: dict) -> bool:
+    msg_type = str(item.get('type', item.get('msg_type', ''))).lower()
+    if msg_type in IMAGE_TYPE_VALUES:
+        return True
+    
+    content = item.get('message', item.get('content', ''))
+    if content:
+        for pattern in IMAGE_PATTERNS:
+            if pattern.search(content):
+                return True
+        if re.search(r'\.(jpg|jpeg|png|gif|bmp|webp|svg|ico|tiff?)(\?|$)', content, re.IGNORECASE):
+            return True
+    
+    if item.get('file') or item.get('attachment') or item.get('image'):
+        return True
+    
+    if item.get('url') and re.search(r'\.(jpg|jpeg|png|gif|bmp|webp)', str(item.get('url')), re.IGNORECASE):
+        return True
+    
+    return False
+
+def is_empty_or_image_content(text: str) -> bool:
+    if not text:
+        return True
+    for pattern in IMAGE_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
+
+# ==================== 防重缓存 ====================
+
+sent_fps = set()
+sent_ids = set()
+
+if os.path.exists(CACHE_FILE):
+    try:
+        with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    sent_fps.add(line)
+                    sent_ids.add(line)
+        logger.info(f"加载防重缓存: {len(sent_fps)} 条")
+    except Exception as e:
+        logger.warning(f"加载防重缓存失败: {e}")
+
+def save_fingerprint(fp: str):
+    if not fp or fp in sent_fps:
+        return
+    sent_fps.add(fp)
+    sent_ids.add(fp)
+    try:
+        with open(CACHE_FILE, 'a', encoding='utf-8') as f:
+            f.write(fp + '\n')
+    except Exception as e:
+        pass
+
+def make_hard_fingerprint(text: str) -> str:
+    if not text:
+        return ""
+    clean = re.findall(r'[\u4e00-\u9fa5a-zA-Z0-9]+', text)
+    return "".join(clean).lower()
+
+def get_message_fingerprint(item: dict) -> str:
+    msg_id = str(item.get('id', item.get('msg_id', '')))
+    if msg_id:
+        return f"id_{msg_id}"
+    
+    sender = item.get("sender", item.get("nick_name", "微信用户"))
+    content = item.get("message", item.get("content", ""))
+    timestamp = str(item.get('time', item.get('timestamp', '')))
+    
+    if timestamp:
+        fp = f"{sender}_{timestamp}_{make_hard_fingerprint(content)}"
+    else:
+        fp = f"{sender}_{make_hard_fingerprint(content)}"
+    
+    return fp
+
+def is_duplicate(item: dict) -> bool:
+    fp = get_message_fingerprint(item)
+    return fp in sent_fps
+
+# ==================== 指令处理与格式化 ====================
+
+def format_command_result(command: str, result: str) -> str:
+    """根据指令类型格式化返回结果"""
+    cmd = command.lstrip('/').strip().lower()
+    
+    if result is None:
+        return "❌ 指令执行失败（RCON无响应）"
+    
+    result = result.strip()
+    
+    if cmd == 'list' or cmd.startswith('list '):
+        players = []
+        if 'players online:' in result:
+            parts = result.split('players online:')
+            if len(parts) > 1:
+                player_str = parts[1].strip()
+                if player_str.endswith('.'):
+                    player_str = player_str[:-1]
+                players = [p.strip() for p in player_str.split(',') if p.strip()]
+        
+        if not players:
+            players = [p for p in result.split() if p.strip()]
+            players = [p for p in players if not p.isdigit() and p not in ['There', 'are', 'of', 'a', 'max', 'players', 'online:']]
+        
+        if not players:
+            return "当前没有玩家在线"
+        
+        player_list = '\n'.join(players)
+        return f"目前有 {len(players)} 位玩家在线：\n{player_list}"
+    
+    if cmd.startswith('say '):
+        return "✅ 已发送广播"
+    
+    if cmd.startswith('kick '):
+        match = re.search(r'kick\s+(\S+)', cmd)
+        player = match.group(1) if match else "玩家"
+        return f"✅ 已踢出 {player}"
+    
+    if cmd.startswith('ban '):
+        match = re.search(r'ban\s+(\S+)', cmd)
+        player = match.group(1) if match else "玩家"
+        return f"✅ 已封禁 {player}"
+    
+    if cmd.startswith('pardon '):
+        match = re.search(r'pardon\s+(\S+)', cmd)
+        player = match.group(1) if match else "玩家"
+        return f"✅ 已解禁 {player}"
+    
+    if cmd.startswith('op '):
+        match = re.search(r'op\s+(\S+)', cmd)
+        player = match.group(1) if match else "玩家"
+        return f"✅ 已给予 {player} 管理员权限"
+    
+    if cmd.startswith('deop '):
+        match = re.search(r'deop\s+(\S+)', cmd)
+        player = match.group(1) if match else "玩家"
+        return f"✅ 已撤销 {player} 管理员权限"
+    
+    if cmd.startswith('gamemode '):
+        match = re.search(r'gamemode\s+(\S+)\s+(\S+)', cmd)
+        if match:
+            mode = match.group(1)
+            player = match.group(2)
+            mode_map = {'0': '生存', '1': '创造', '2': '冒险', '3': '旁观'}
+            mode_text = mode_map.get(mode, mode)
+            return f"✅ 已将 {player} 模式调整为 {mode_text}"
+        return "✅ 已调整游戏模式"
+    
+    if cmd.startswith('weather '):
+        match = re.search(r'weather\s+(\S+)', cmd)
+        if match:
+            weather = match.group(1)
+            weather_map = {'clear': '晴天', 'rain': '雨天', 'thunder': '雷暴'}
+            weather_text = weather_map.get(weather, weather)
+            return f"✅ 已将天气调为 {weather_text}"
+        return "✅ 已调整天气"
+    
+    if cmd == 'stop':
+        return "✅ 已关闭服务器"
+    
+    if cmd == 'help':
+        return HELP_TEXT
+    
+    if result:
+        return result
+    else:
+        return "✅ 指令已执行"
+
+HELP_TEXT = """📋 群内指令列表
+
+/list    列出当前在线玩家（全体）
+/say <message>    向所有玩家广播消息（仅管理员）
+/kick <player>    踢出指定玩家（仅管理员）
+/ban <player>    封禁指定玩家（仅管理员）
+/pardon <player>    解除玩家封禁（仅管理员）
+/op <player>    授予玩家管理员权限（仅管理员）
+/deop <player>    撤销玩家管理员权限（仅管理员）
+/gamemode <mode> <player>    设置玩家的游戏模式（仅管理员）
+/weather <clear/rain/thunder>    更改天气状况（仅管理员）
+/stop    优雅地关闭服务器（仅管理员）"""
+
+# ==================== 微信 -> MC 转发 ====================
+
+def send_command_to_mc(command: str) -> str:
+    """发送指令到MC服务器"""
+    try:
+        clean_cmd = command.lstrip('/').strip()
+        if not clean_cmd:
+            return "指令为空"
+        
+        if clean_cmd.startswith('time set'):
+            return "❌ time set 指令已被禁用"
+        
+        logger.info(f"执行: {clean_cmd}")
+        
+        result = rcon_command(clean_cmd)
+        return format_command_result(clean_cmd, result)
+            
+    except Exception as e:
+        logger.error(f"RCON异常: {e}")
+        return f"❌ 指令执行异常: {str(e)}"
+
+def send_chat_to_mc(sender: str, message: str):
+    try:
+        clean_sender = sender.strip() or "微信用户"
+        clean_msg = message.strip()
+        if not clean_msg:
+            return
+
+        raw_components = [
+            "",
+            {"text": "[微信] ", "color": "green", "bold": True},
+            {"text": f"<{clean_sender}> ", "color": "gray"},
+            {"text": clean_msg, "color": "white"}
+        ]
+        cmd = f'tellraw @a {json.dumps(raw_components, ensure_ascii=False)}'
+        
+        rcon_command(cmd)
+        logger.info(f"转发: <{clean_sender}> {clean_msg}")
+    except Exception as e:
+        logger.error(f"发送失败: {e}")
+
+def send_to_wechat(text: str):
+    try:
+        response = requests.post(
+            WECHAT_BRIDGE_URL,
+            json={"content": text},
+            timeout=5
+        )
+        if response.status_code == 200:
+            logger.info(f"转发到微信: {text[:30]}...")
+        else:
+            logger.warning(f"微信桥接HTTP错误: {response.status_code}")
+    except Exception as e:
+        logger.error(f"微信桥接连接失败: {e}")
+
+# ==================== 微信消息拉取 ====================
+
+def fetch_wechat_messages():
+    try:
+        req = Request(WECHAT_API_URL)
+        with urlopen(req, timeout=3) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode('utf-8'))
+                if isinstance(data, list):
+                    return data
+                elif isinstance(data, dict):
+                    return data.get("messages", data.get("data", []))
+    except Exception:
+        pass
+    return []
+
+def should_process_message(item: dict) -> tuple:
+    if is_duplicate(item):
+        return False, "duplicate"
+    
+    group = item.get("room_name") or item.get("group_name") or item.get("chat") or item.get("title") or ""
+    if group and group != TARGET_GROUP:
+        return False, "group_mismatch"
+    
+    sender = item.get("sender") or item.get("nick_name") or item.get("display_name") or ""
+    if sender in EXCLUDE_SENDERS:
+        return False, "sender_blacklist"
+    
+    if is_image_message(item):
+        return False, "image"
+    
+    content = item.get("message", item.get("content", ""))
+    if is_empty_or_image_content(content):
+        return False, "empty_or_image"
+    
+    return True, "ok"
+
+# ==================== SFTP MC日志监控 ====================
+
+def sftp_monitor():
+    logger.info("连接SFTP...")
+    
+    transport = paramiko.Transport((SFTP_HOST, SFTP_PORT))
+    try:
+        transport.connect(username=SFTP_USER, password=SFTP_PASS)
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        logger.info("SFTP连接成功")
+    except Exception as e:
+        logger.error(f"SFTP连接失败: {e}")
+        return
+
+    try:
+        last_offset = sftp.stat(REMOTE_LOG_PATH).st_size
+    except Exception as e:
+        logger.warning(f"无法获取日志: {e}")
+        last_offset = 0
+
+    while True:
+        try:
+            current_size = sftp.stat(REMOTE_LOG_PATH).st_size
+
+            if current_size > last_offset:
+                remote_file = sftp.open(REMOTE_LOG_PATH, 'rb')
+                remote_file.seek(last_offset)
+                new_data = remote_file.read()
+                remote_file.close()
+                last_offset = current_size
+
+                lines = new_data.decode('utf-8', errors='ignore').splitlines()
+
+                for line in lines:
+                    line_str = line.strip()
+                    if not line_str:
+                        continue
+
+                    match = CHAT_PATTERN.search(line_str)
+                    if match:
+                        player = clean_text(match.group('player'))
+                        message = clean_text(match.group('message'))
+                        send_to_wechat(f"[MC] <{player}> {message}")
+
+            elif current_size < last_offset:
+                last_offset = 0
+
+        except Exception as e:
+            time.sleep(2)
+            try:
+                transport = paramiko.Transport((SFTP_HOST, SFTP_PORT))
+                transport.connect(username=SFTP_USER, password=SFTP_PASS)
+                sftp = paramiko.SFTPClient.from_transport(transport)
+            except Exception:
+                pass
+
+        time.sleep(0.5)
+
+# ==================== 微信消息轮询 ====================
+
+def wechat_polling():
+    logger.info(f"微信轮询启动")
+    logger.info(f"管理员: {', '.join(ADMIN_USERS)}")
+    
+    test_result = rcon_command('list')
+    if test_result:
+        logger.info(f"✅ RCON连接正常")
+    else:
+        logger.warning("⚠️ RCON连接失败")
+    
+    initial_msgs = fetch_wechat_messages()
+    if initial_msgs:
+        for item in initial_msgs:
+            fp = get_message_fingerprint(item)
+            if fp:
+                save_fingerprint(fp)
+        logger.info(f"已标记 {len(initial_msgs)} 条旧消息")
+
+    while True:
+        try:
+            msgs = fetch_wechat_messages()
+            if msgs:
+                for item in msgs:
+                    if is_duplicate(item):
+                        continue
+                    
+                    fp = get_message_fingerprint(item)
+                    should_process, reason = should_process_message(item)
+                    
+                    if not should_process:
+                        if fp:
+                            save_fingerprint(fp)
+                        continue
+
+                    sender = item.get("sender") or item.get("nick_name") or "微信用户"
+                    message = item.get("message") or item.get("content") or ""
+                    
+                    if fp:
+                        save_fingerprint(fp)
+
+                    if message.startswith('/'):
+                        cmd_name = message.split()[0].lower() if message.split() else message.lower()
+                        
+                        if cmd_name not in PUBLIC_COMMANDS:
+                            if sender not in ADMIN_USERS:
+                                logger.warning(f"拒绝指令: {sender}")
+                                send_to_wechat(f"❌ 您没有权限执行此指令")
+                                continue
+                        
+                        logger.info(f"[指令] {sender}: {message}")
+                        result = send_command_to_mc(message)
+                        send_to_wechat(f"{result}")
+                    else:
+                        logger.info(f"[微信] {sender}: {message}")
+                        send_chat_to_mc(sender, message)
+
+        except Exception as e:
+            logger.error(f"轮询异常: {e}")
+
+        time.sleep(1.0)
+
+# ==================== HTTP 桥接服务 ====================
+
+class WeChatXDOperator:
+    def __init__(self):
+        self.window_id = None
+        self.delays = DELAYS
+
+    def wait(self, delay_key: str):
+        time.sleep(self.delays.get(delay_key, 0.3))
+
+    def find_window(self) -> bool:
+        for attempt in range(3):
+            try:
+                for title in ['微信', 'WeChat']:
+                    result = subprocess.run(
+                        ['xdotool', 'search', '--name', title],
+                        capture_output=True, text=True
+                    )
+                    window_ids = result.stdout.strip().split()
+                    if window_ids:
+                        self.window_id = window_ids[0]
+                        return True
+
+                result = subprocess.run(
+                    ['xdotool', 'search', '--class', 'wechat'],
+                    capture_output=True, text=True
+                )
+                window_ids = result.stdout.strip().split()
+                if window_ids:
+                    self.window_id = window_ids[0]
+                    return True
+
+                time.sleep(1)
+            except:
+                time.sleep(1)
+        return False
+
+    def activate_window(self) -> bool:
+        if not self.window_id:
+            return False
+        try:
+            subprocess.run(['xdotool', 'windowactivate', self.window_id], capture_output=True)
+            self.wait('window_activate')
+            return True
+        except:
+            return False
+
+    def get_window_geometry(self) -> dict:
+        if not self.window_id:
+            return {}
+        try:
+            result = subprocess.run(
+                ['xdotool', 'getwindowgeometry', self.window_id],
+                capture_output=True, text=True
+            )
+            lines = result.stdout.strip().split('\n')
+            geometry = {}
+            for line in lines:
+                if 'Position:' in line:
+                    parts = line.split('Position:')[1].strip().split(',')
+                    geometry['x'] = int(parts[0].strip())
+                    geometry['y'] = int(parts[1].strip())
+                elif 'Geometry:' in line:
+                    parts = line.split('Geometry:')[1].strip().split('x')
+                    geometry['width'] = int(parts[0].strip())
+                    geometry['height'] = int(parts[1].strip())
+            return geometry
+        except:
+            return {}
+
+    def click(self, x: int, y: int):
+        subprocess.run(['xdotool', 'mousemove', str(x), str(y)], capture_output=True)
+        time.sleep(0.1)
+        subprocess.run(['xdotool', 'click', '1'], capture_output=True)
+        time.sleep(0.1)
+
+    def paste_text(self, text: str) -> bool:
+        try:
+            p = subprocess.Popen(
+                ['xclip', '-selection', 'clipboard', '-rmlastnl'],
+                stdin=subprocess.PIPE
+            )
+            p.communicate(input=text.encode('utf-8'))
+            time.sleep(0.1)
+            subprocess.run(['xdotool', 'key', '--clearmodifiers', 'ctrl+v'], capture_output=True)
+            self.wait('paste_wait')
+            return True
+        except:
+            return False
+
+    def send_text(self, content: str) -> bool:
+        for attempt in range(3):
+            try:
+                if not self.find_window():
+                    time.sleep(1)
+                    continue
+
+                if not self.activate_window():
+                    time.sleep(1)
+                    continue
+
+                geometry = self.get_window_geometry()
+                if geometry:
+                    click_x = geometry.get('x', 0) + geometry.get('width', 800) // 2
+                    click_y = geometry.get('y', 0) + geometry.get('height', 600) - 60
+                    self.click(click_x, click_y)
+                    self.wait('click_input')
+
+                subprocess.run(['xdotool', 'key', '--clearmodifiers', 'ctrl+a'], capture_output=True)
+                time.sleep(0.1)
+                subprocess.run(['xdotool', 'key', 'BackSpace'], capture_output=True)
+                time.sleep(0.1)
+
+                if not self.paste_text(content):
+                    continue
+
+                time.sleep(0.2)
+                subprocess.run(['xdotool', 'key', '--clearmodifiers', 'Return'], capture_output=True)
+                self.wait('send_wait')
+                return True
+
+            except:
+                time.sleep(self.delays['retry_interval'])
+
+        return False
+
+class HTTPHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def _send_response(self, status_code: int, data: dict):
+        self.send_response(status_code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+
+    def do_GET(self):
+        path = self.path.strip('/')
+        if path == 'test':
+            self._send_response(200, {"status": "ok"})
+        else:
+            self._send_response(404, {"error": "Not found"})
+
+    def do_POST(self):
+        path = self.path.strip('/')
+        if path != 'wxSend':
+            self._send_response(404, {"error": "Not found"})
+            return
+
+        length = int(self.headers.get('Content-Length', 0))
+        if length == 0:
+            self._send_response(400, {"error": "Empty request"})
+            return
+
+        body = self.rfile.read(length).decode('utf-8')
+        try:
+            data = json.loads(body)
+        except:
+            self._send_response(400, {"error": "Invalid JSON"})
+            return
+
+        content = data.get('content')
+        if not content:
+            self._send_response(400, {"error": "Missing 'content'"})
+            return
+
+        operator = WeChatXDOperator()
+        success = operator.send_text(content)
+        self._send_response(200, {"status": "success" if success else "failed"})
+
+def start_http():
+    server = HTTPServer(('0.0.0.0', 9999), HTTPHandler)
+    logger.info("HTTP: http://localhost:9999/wxSend")
+    server.serve_forever()
+
+# ==================== 主程序 ====================
+
+def main():
+    logger.info("=" * 40)
+    logger.info("🚀 MC ↔ 微信 双向桥接服务")
+    logger.info(f"管理员: {', '.join(ADMIN_USERS)}")
+    logger.info("=" * 40)
+
+    test_result = rcon_command('list')
+    if test_result:
+        logger.info(f"✅ RCON连接成功: {test_result[:50]}...")
+    else:
+        logger.warning("⚠️ RCON连接失败，请检查配置")
+
+    if not os.environ.get('DISPLAY'):
+        os.environ['DISPLAY'] = ':0'
+
+    threads = [
+        threading.Thread(target=sftp_monitor, name="SFTP-Monitor", daemon=True),
+        threading.Thread(target=wechat_polling, name="WeChat-Polling", daemon=True),
+        threading.Thread(target=start_http, name="HTTP-Server", daemon=True),
+    ]
+
+    for t in threads:
+        t.start()
+        time.sleep(0.5)
+
+    logger.info("所有服务已启动")
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("服务已停止")
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("程序退出")
+```
 ### 3. `web_server.py` — Web 管理控制台
 
 提供可视化运维界面（端口 `1145`）：
 - **日志查看**：实时滚动显示 `main` 和 `mcmain` 的日志
 - **配置编辑**：可视化编辑 `config.ini`，保存后自动热加载
 
+```python
+#!/usr/bin/env python3
+"""
+web_server.py - Web日志查看 + 配置编辑 (端口1145)
+"""
+
+import http.server
+import socketserver
+import os
+import json
+import configparser
+
+PORT = 1145
+LOG_DIR = os.path.join(os.path.dirname(__file__), 'logs')
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.ini')
+
+def get_config_dict():
+    """读取配置文件返回字典"""
+    config = configparser.ConfigParser()
+    if os.path.exists(CONFIG_FILE):
+        config.read(CONFIG_FILE, encoding='utf-8')
+        result = {}
+        for section in config.sections():
+            result[section] = dict(config.items(section))
+        return result
+    return {}
+
+def save_config_dict(data):
+    """保存配置字典到文件"""
+    config = configparser.ConfigParser()
+    for section, items in data.items():
+        config[section] = items
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        config.write(f)
+    return True
+
+class LogHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/' or self.path == '/index.html':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(self.get_html().encode('utf-8'))
+        
+        elif self.path == '/logs':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json; charset=utf-8')
+            self.end_headers()
+            
+            logs = {}
+            for name in ['main', 'mcmain']:
+                log_file = os.path.join(LOG_DIR, f'{name}.log')
+                try:
+                    with open(log_file, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+                        logs[name] = ''.join(lines[-200:]) if lines else '暂无日志...'
+                except:
+                    logs[name] = '日志文件不存在'
+            
+            self.wfile.write(json.dumps(logs, ensure_ascii=False).encode('utf-8'))
+        
+        elif self.path == '/config':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps(get_config_dict(), ensure_ascii=False).encode('utf-8'))
+        
+        else:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b'404 Not Found')
+    
+    def do_POST(self):
+        if self.path == '/config':
+            length = int(self.headers.get('Content-Length', 0))
+            if length == 0:
+                self._send_json(400, {"error": "Empty request"})
+                return
+            
+            body = self.rfile.read(length).decode('utf-8')
+            try:
+                data = json.loads(body)
+                if save_config_dict(data):
+                    self._send_json(200, {"status": "success", "message": "配置已保存"})
+                else:
+                    self._send_json(500, {"error": "保存失败"})
+            except Exception as e:
+                self._send_json(400, {"error": str(e)})
+        else:
+            self._send_json(404, {"error": "Not found"})
+    
+    def _send_json(self, status_code, data):
+        self.send_response(status_code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+    
+    def get_html(self):
+        return '''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>服务管理 - 1145端口</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', sans-serif; background: #0a0e17; color: #e0e0e0; padding: 20px; }
+        .header { text-align: center; padding: 20px 0 30px 0; border-bottom: 2px solid #1a2a3a; margin-bottom: 30px; }
+        .header h1 { font-size: 28px; color: #00d4ff; }
+        .header .info { color: #8899aa; font-size: 14px; margin-top: 8px; }
+        .tabs { display: flex; gap: 10px; justify-content: center; margin-bottom: 25px; }
+        .tab-btn { background: #1a2a3a; border: 1px solid #2a3a4a; color: #8899aa; padding: 8px 24px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+        .tab-btn:hover { background: #2a3a4a; color: #00d4ff; }
+        .tab-btn.active { background: #00d4ff22; border-color: #00d4ff; color: #00d4ff; }
+        .tab-content { display: none; max-width: 1400px; margin: 0 auto; }
+        .tab-content.active { display: block; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .log-block { background: #111927; border-radius: 12px; border: 1px solid #1a2a3a; overflow: hidden; min-height: 400px; display: flex; flex-direction: column; }
+        .log-block:hover { border-color: #00d4ff; }
+        .log-header { background: #1a2a3a; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2a3a4a; }
+        .log-header .name { font-weight: bold; font-size: 16px; }
+        .log-header .badge { background: #00d4ff22; color: #00d4ff; padding: 2px 12px; border-radius: 12px; font-size: 12px; border: 1px solid #00d4ff44; }
+        .log-content { padding: 15px 20px; flex: 1; overflow-y: auto; max-height: 500px; background: #0d1420; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+        .log-content::-webkit-scrollbar { width: 6px; }
+        .log-content::-webkit-scrollbar-track { background: #0d1420; }
+        .log-content::-webkit-scrollbar-thumb { background: #1a2a3a; border-radius: 3px; }
+        .footer { text-align: center; padding: 20px; color: #445566; font-size: 12px; margin-top: 20px; }
+        .refresh-btn { background: #1a2a3a; border: 1px solid #2a3a4a; color: #8899aa; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+        .refresh-btn:hover { background: #2a3a4a; color: #00d4ff; border-color: #00d4ff; }
+        .timestamp { color: #445566; font-size: 11px; }
+        
+        /* 配置编辑样式 */
+        .config-container { background: #111927; border-radius: 12px; border: 1px solid #1a2a3a; padding: 30px; max-width: 800px; margin: 0 auto; }
+        .config-container h2 { color: #00d4ff; margin-bottom: 20px; }
+        .config-section { margin-bottom: 25px; border-bottom: 1px solid #1a2a3a; padding-bottom: 20px; }
+        .config-section:last-child { border-bottom: none; }
+        .config-section h3 { color: #ffd93d; margin-bottom: 12px; font-size: 16px; }
+        .config-item { display: flex; align-items: center; margin-bottom: 8px; padding: 4px 0; }
+        .config-item label { width: 160px; color: #8899aa; font-size: 13px; flex-shrink: 0; }
+        .config-item input, .config-item textarea { 
+            flex: 1; background: #0d1420; border: 1px solid #1a2a3a; color: #e0e0e0; 
+            padding: 6px 12px; border-radius: 6px; font-size: 13px; 
+        }
+        .config-item input:focus, .config-item textarea:focus { border-color: #00d4ff; outline: none; }
+        .config-item textarea { min-height: 60px; resize: vertical; font-family: monospace; }
+        .config-actions { display: flex; gap: 12px; margin-top: 20px; justify-content: center; }
+        .btn-save { background: #00d4ff; border: none; color: #0a0e17; padding: 10px 40px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
+        .btn-save:hover { background: #33ddff; }
+        .btn-save:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-reload { background: #1a2a3a; border: 1px solid #2a3a4a; color: #8899aa; padding: 10px 30px; border-radius: 8px; font-size: 14px; cursor: pointer; }
+        .btn-reload:hover { background: #2a3a4a; color: #00d4ff; }
+        .save-status { text-align: center; margin-top: 12px; color: #51cf66; font-size: 14px; }
+        .save-status.error { color: #ff6b6b; }
+        @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } .config-item { flex-direction: column; align-items: stretch; } .config-item label { width: auto; margin-bottom: 4px; } }
+    </style>
+    <script>
+        // ========== 日志刷新 ==========
+        function refreshLogs() {
+            fetch('/logs')
+                .then(res => res.json())
+                .then(data => {
+                    for (let name in data) {
+                        const el = document.getElementById('log-' + name);
+                        if (el) {
+                            el.textContent = data[name] || '暂无日志...';
+                            el.scrollTop = el.scrollHeight;
+                        }
+                    }
+                    document.getElementById('refresh-time').textContent = 
+                        '最后更新: ' + new Date().toLocaleTimeString();
+                })
+                .catch(err => console.error('刷新失败:', err));
+        }
+        
+        // ========== 配置加载 ==========
+        function loadConfig() {
+            fetch('/config')
+                .then(res => res.json())
+                .then(data => {
+                    const container = document.getElementById('config-editor');
+                    container.innerHTML = '';
+                    for (let section in data) {
+                        const div = document.createElement('div');
+                        div.className = 'config-section';
+                        const title = document.createElement('h3');
+                        title.textContent = '[' + section + ']';
+                        div.appendChild(title);
+                        
+                        for (let key in data[section]) {
+                            const item = document.createElement('div');
+                            item.className = 'config-item';
+                            const label = document.createElement('label');
+                            label.textContent = key;
+                            const input = document.createElement('input');
+                            input.type = 'text';
+                            input.value = data[section][key];
+                            input.dataset.section = section;
+                            input.dataset.key = key;
+                            item.appendChild(label);
+                            item.appendChild(input);
+                            div.appendChild(item);
+                        }
+                        container.appendChild(div);
+                    }
+                    document.getElementById('save-status').textContent = '';
+                    document.getElementById('save-status').className = 'save-status';
+                })
+                .catch(err => {
+                    document.getElementById('config-editor').innerHTML = 
+                        '<div style="color:#ff6b6b;text-align:center;padding:40px;">❌ 加载配置失败: ' + err + '</div>';
+                });
+        }
+        
+        // ========== 保存配置 ==========
+        function saveConfig() {
+            const btn = document.getElementById('btn-save');
+            btn.disabled = true;
+            btn.textContent = '⏳ 保存中...';
+            
+            const data = {};
+            const inputs = document.querySelectorAll('#config-editor input');
+            inputs.forEach(inp => {
+                const section = inp.dataset.section;
+                const key = inp.dataset.key;
+                if (!data[section]) data[section] = {};
+                data[section][key] = inp.value;
+            });
+            
+            fetch('/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(res => res.json())
+            .then(result => {
+                const status = document.getElementById('save-status');
+                if (result.status === 'success') {
+                    status.textContent = '✅ ' + result.message;
+                    status.className = 'save-status';
+                } else {
+                    status.textContent = '❌ ' + (result.error || '保存失败');
+                    status.className = 'save-status error';
+                }
+            })
+            .catch(err => {
+                document.getElementById('save-status').textContent = '❌ 请求失败: ' + err;
+                document.getElementById('save-status').className = 'save-status error';
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.textContent = '💾 保存配置';
+            });
+        }
+        
+        // ========== Tab切换 ==========
+        function switchTab(tab) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+            document.getElementById('tab-' + tab).classList.add('active');
+            document.querySelector('.tab-btn[data-tab="' + tab + '"]').classList.add('active');
+            if (tab === 'config') loadConfig();
+            if (tab === 'logs') refreshLogs();
+        }
+        
+        // ========== 初始化 ==========
+        window.onload = function() {
+            refreshLogs();
+            setInterval(refreshLogs, 3000);
+        };
+    </script>
+</head>
+<body>
+    <div class="header">
+        <h1>📊 服务管理中心</h1>
+        <div class="info">端口: 1145 | <span id="refresh-time">加载中...</span></div>
+    </div>
+    
+    <div class="tabs">
+        <button class="tab-btn active" data-tab="logs" onclick="switchTab('logs')">📋 日志查看</button>
+        <button class="tab-btn" data-tab="config" onclick="switchTab('config')">⚙️ 配置编辑</button>
+    </div>
+    
+    <!-- 日志Tab -->
+    <div id="tab-logs" class="tab-content active">
+        <div style="text-align:right;margin-bottom:12px;">
+            <button class="refresh-btn" onclick="refreshLogs()">🔄 刷新</button>
+        </div>
+        <div class="grid">
+            <div class="log-block">
+                <div class="log-header"><span class="name" style="color:#00d4ff;">📱 main (微信→MC)</span><span class="badge">.log</span></div>
+                <div class="log-content" id="log-main"><span class="empty-log">加载中...</span></div>
+            </div>
+            <div class="log-block">
+                <div class="log-header"><span class="name" style="color:#ff6b6b;">🎮 mcmain (MC→微信)</span><span class="badge">.log</span></div>
+                <div class="log-content" id="log-mcmain"><span class="empty-log">加载中...</span></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 配置Tab -->
+    <div id="tab-config" class="tab-content">
+        <div class="config-container">
+            <h2>⚙️ 配置文件编辑</h2>
+            <p style="color:#8899aa;font-size:13px;margin-bottom:20px;">
+                修改后点击保存，服务将自动热加载新配置（部分参数需要重启生效）
+            </p>
+            <div id="config-editor">加载中...</div>
+            <div class="config-actions">
+                <button class="btn-save" id="btn-save" onclick="saveConfig()">💾 保存配置</button>
+                <button class="btn-reload" onclick="loadConfig()">🔄 重新加载</button>
+            </div>
+            <div id="save-status" class="save-status"></div>
+        </div>
+    </div>
+    
+    <div class="footer">Powered by Python HTTP Server | 配置文件: config.ini</div>
+</body>
+</html>'''
+        
+if __name__ == '__main__':
+    socketserver.TCPServer.allow_reuse_address = True
+    with socketserver.TCPServer(('', PORT), LogHandler) as httpd:
+        print(f'Web日志服务器已启动: http://localhost:{PORT}')
+        print('按 Ctrl+C 停止服务器')
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print('\n服务器已停止')
+```
 ### 4. 服务管理脚本
 
 - **`start.sh`**：一键启动所有服务，日志输出到 `logs/` 目录
+```bash
+#!/bin/bash
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR" || exit 1
+
+LOG_DIR="$SCRIPT_DIR/logs"
+mkdir -p "$LOG_DIR"
+
+echo "========================================="
+echo "启动所有服务 (Web日志端口: 1145)"
+echo "启动时间: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "========================================="
+
+# 检查配置文件
+if [ ! -f "$SCRIPT_DIR/config.ini" ]; then
+    echo "⚠️ 配置文件不存在，请创建 config.ini"
+    exit 1
+fi
+
+# 启动Python脚本
+for script in main.py mcmain.py web_server.py; do
+    if [ -f "$SCRIPT_DIR/$script" ]; then
+        LOG_FILE="$LOG_DIR/${script%.py}.log"
+        > "$LOG_FILE"
+        echo "启动: $script -> ${script%.py}.log"
+        nohup python3 "$SCRIPT_DIR/$script" >> "$LOG_FILE" 2>&1 &
+        echo "✓ $script 已启动 (PID: $!)"
+        sleep 0.3
+    else
+        echo "✗ 文件不存在: $script"
+    fi
+done
+
+echo "========================================="
+echo "所有脚本已启动！"
+echo "Web管理地址: http://localhost:1145"
+echo "========================================="
+
+# 等待
+wait
+```
 - **`stop.sh`**：优雅地停止所有相关进程
+```bash
+#!/bin/bash
+
+# 停止所有相关进程
+
+echo "正在停止所有服务..."
+
+# 停止Web服务器 (端口1145)
+PORT_PID=$(lsof -ti:1145 2>/dev/null)
+if [ -n "$PORT_PID" ]; then
+    kill -9 $PORT_PID 2>/dev/null
+    echo "✓ 已停止Web服务器 (端口1145)"
+fi
+
+# 停止Python脚本
+for script in main.py mcmain.py web_server.py; do
+    PIDS=$(pgrep -f "python3.*$script" 2>/dev/null)
+    if [ -n "$PIDS" ]; then
+        kill -9 $PIDS 2>/dev/null
+        echo "✓ 已停止 $script"
+    fi
+done
+
+# 额外清理：停止所有相关的nohup进程
+PIDS=$(pgrep -f "nohup.*python3.*main.py\|mcmain.py\|web_server.py" 2>/dev/null)
+if [ -n "$PIDS" ]; then
+    kill -9 $PIDS 2>/dev/null
+    echo "✓ 已清理残留进程"
+fi
+
+echo "所有服务已停止"
+```
 
 ### 5. 配置文件 `config.ini`
 
@@ -297,5 +1512,5 @@ tail -f logs/mcmain.log
 
 > 🔗 **相关链接**：
 > * 返回 [[index|🌿 数字花园首页]]
-> * 项目源码：[[wechat-decrypt|https://gitcode.com/gcw_xlkU87N4/wechat-decrypt]]
+> * 项目源码：[[wechat-decrypt]https://gitcode.com/gcw_xlkU87N4/wechat-decrypt]
 > * 最终效果：![效果图](https://raw.gitcode.com/turndargon1254/sdfzmc/raw/main/mcresult.png)
