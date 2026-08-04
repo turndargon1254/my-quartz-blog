@@ -130,64 +130,7 @@ draft: false
 
 ### 完整数据流图
 
-```mermaid
-flowchart TB
-    subgraph WeChat["微信桌面客户端 (Linux Xvfb :99)"]
-        direction TB
-        subgraph Up["📤 上行 (MC→微信)"]
-            U1["微信聊天窗口接收消息"]
-            U2["↑ (Ctrl+V 粘贴发送)"]
-            U1 --> U2
-        end
-        subgraph Down["📥 下行 (微信→MC)"]
-            D1["微信本地数据库 (SQLCipher)"]
-            D2["↓ (wechat-decrypt 解密)"]
-            D1 --> D2
-        end
-    end
-
-    subgraph Bridge["桥接服务层 (Linux 宿主机)"]
-        direction TB
-        subgraph B1["HTTP 桥接 (内置)"]
-            B1a["端口: 9999"]
-            B1b["xclip + xdotool 发送"]
-        end
-        
-        subgraph B2["main.py (wechat-decrypt)"]
-            B2a["monitor_web.py"]
-            B2b["端口: 5678"]
-            B2c["提供 /api/history API"]
-        end
-        
-        subgraph B3["mcmain.py (核心服务)"]
-            B3a["SFTP 日志监听"]
-            B3b["消息轮询 & 指令转发"]
-            B3c["RCON 执行"]
-        end
-    end
-
-    subgraph MC["Minecraft 服务器端"]
-        M1["SFTP 日志文件<br/>logs/latest.log"]
-        M2["RCON 服务"]
-    end
-
-    M1 -->|"SFTP 读取"| B3a
-    B3a -->|"提取聊天"| B1a
-    B1a -->|"Ctrl+V 粘贴"| U2
-    
-    D2 -->|"解密数据"| B2c
-    B2c -->|"轮询 API"| B3b
-    B3b -->|"RCON 指令/广播"| B3c
-    B3c -->|"RCON 协议"| M2
-
-    classDef wechat fill:#1a2a3a,stroke:#00d4ff,color:#e0e0e0
-    classDef bridge fill:#111927,stroke:#ffd93d,color:#e0e0e0
-    classDef mc fill:#0d1420,stroke:#ff6b6b,color:#e0e0e0
-    
-    class WeChat wechat
-    class Bridge bridge
-    class MC mc
-```
+![流程图](https://raw.gitcode.com/turndargon1254/sdfzmc/raw/main/mcprocess.png)
 
 ---
 
@@ -354,4 +297,4 @@ tail -f logs/mcmain.log
 > 🔗 **相关链接**：
 > * 返回 [[index|🌿 数字花园首页]]
 > * 项目源码：[[wechat-decrypt|https://gitcode.com/gcw_xlkU87N4/wechat-decrypt]]
-> * 最终效果：![效果图](https://gitcode.com/turndargon1254/sdfzmc/blob/main/mcresult.png)
+> * 最终效果：![效果图](https://raw.gitcode.com/turndargon1254/sdfzmc/raw/main/mcresult.png)
