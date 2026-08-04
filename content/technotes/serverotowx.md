@@ -1512,5 +1512,5 @@ tail -f logs/mcmain.log
 
 > 🔗 **相关链接**：
 > * 返回 [[index|🌿 数字花园首页]]
-> * 项目源码：[[wechat-decrypt]https://gitcode.com/gcw_xlkU87N4/wechat-decrypt]
+> * 项目源码：[wechat-decrypt]https://gitcode.com/gcw_xlkU87N4/wechat-decrypt
 > * 最终效果：![效果图](https://raw.gitcode.com/turndargon1254/sdfzmc/raw/main/mcresult.png)
