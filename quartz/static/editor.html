@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Quartz 在线编辑器</title>
+    <link rel="stylesheet" href="https://unpkg.com/vditor@3.9.6/dist/index.css" />
+    <style>
+        :root {
+            --border: #e5e7eb;
+            --sidebar-bg: #f9fafb;
+            --active: #e0edff;
+            --primary: #3b82f6;
+            --text: #1f2937;
+            --muted: #6b7280;
+        }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; }
+
+        .app { display: flex; flex-direction: column; height: 100vh; }
+
+        .toolbar {
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 12px; border-bottom: 1px solid var(--border);
+            background: #fff; flex-shrink: 0;
+        }
+        .toolbar .title { font-weight: 600; margin-right: 8px; white-space: nowrap; }
+        .toolbar button {
+            padding: 5px 12px; border: 1px solid var(--border); border-radius: 6px;
+            background: #fff; color: var(--text); cursor: pointer; font-size: 13px;
+        }
+        .toolbar button:hover { background: #f3f4f6; }
+        .toolbar button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+        .toolbar button.danger:hover { background: #fee2e2; color: #b91c1c; border-color: #fca5a5; }
+        .toolbar .spacer { flex: 1; }
+        .toolbar .status { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+        .body { flex: 1; display: flex; min-height: 0; }
+
+        .sidebar {
+            width: 300px; min-width: 220px; max-width: 380px;
+            background: var(--sidebar-bg); border-right: 1px solid var(--border);
+            display: flex; flex-direction: column;
+        }
+        .sidebar-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600;
+        }
+        #tree { flex: 1; overflow: auto; padding: 6px 8px; font-size: 13px; user-select: none; }
+
+        .tree-item { display: flex; align-items: center; gap: 4px; padding: 3px 6px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+        .tree-item:hover { background: #eef1f4; }
+        .tree-item.selected { background: var(--active); }
+        .tree-item .arrow { width: 14px; flex-shrink: 0; color: var(--muted); text-align: center; }
+        .tree-item .icon { width: 18px; flex-shrink: 0; text-align: center; }
+        .tree-item .name { overflow: hidden; text-overflow: ellipsis; }
+        .tree-children { margin-left: 16px; }
+        .tree-children.collapsed { display: none; }
+        .tree-empty { padding: 16px; color: var(--muted); font-size: 12px; text-align: center; }
+
+        .editor-wrap { flex: 1; min-width: 0; position: relative; background: #fff; }
+        #vditor { height: 100% !important; border: none !important; border-radius: 0 !important; }
+        #vditor .vditor-toolbar { border-left: none !important; border-right: none !important; }
+
+        .modal-mask {
+            position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 1000;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .modal {
+            background: #fff; border-radius: 10px; padding: 18px; width: 420px;
+            box-shadow: 0 10px 40px rgba(0,0,0,.2);
+        }
+        .modal h3 { margin: 0 0 12px; font-size: 15px; }
+        .modal label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; }
+        .modal input, .modal select {
+            width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; margin-bottom: 10px;
+        }
+        .modal .hint { font-size: 12px; color: var(--muted); margin-top: -4px; margin-bottom: 10px; line-height: 1.5; }
+        .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+        .modal .actions button {
+            padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px;
+        }
+        .modal .actions button.ok { background: var(--primary); border-color: var(--primary); color: #fff; }
+        .toast {
+            position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+            background: #111827; color: #fff; padding: 8px 16px; border-radius: 8px;
+            font-size: 13px; z-index: 2000; opacity: 0; transition: opacity .25s;
+            pointer-events: none;
+        }
+        .toast.show { opacity: 1; }
+        .badge { font-size: 11px; background: #fef3c7; color: #92400e; padding: 2px 8px; border-radius: 10px; margin-left: 6px; }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <div class="toolbar">
+            <span class="title">📝 Quartz 在线编辑器</span>
+            <button id="btnNew">＋ 新建</button>
+            <button id="btnRename">✏️ 重命名</button>
+            <button id="btnDelete">🗑 删除</button>
+            <span class="spacer"></span>
+            <span id="status" class="status">未连接</span>
+            <button id="btnSettings">⚙️ 设置</button>
+            <button id="btnSave" class="primary">🚀 保存并发布</button>
+        </div>
+
+        <div class="body">
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <span>content/<span id="repoLabel" class="badge"></span></span>
+                    <button id="btnRefresh" title="刷新文件树">🔄</button>
+                </div>
+                <div id="tree"></div>
+            </aside>
+            <section class="editor-wrap">
+                <div id="vditor"></div>
+            </section>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="https://unpkg.com/vditor@3.9.6/dist/index.min.js"></script>
+    <script>
+        const SETTINGS_KEY = "quartz_gh_settings";
+        const state = {
+            settings: null,
+            files: [],          // 扁平列表: [{path, sha}]
+            currentPath: null,
+            currentSha: null,
+            currentDir: "",
+            expanded: new Set(),
+            selectedPath: null,
+            dirty: false,
+            saving: false,
+        };
+
+        const $ = (sel) => document.querySelector(sel);
+        let vditor;
+
+        // ---------- 工具函数 ----------
+        function toast(msg) {
+            const el = $("#toast");
+            el.textContent = msg;
+            el.classList.add("show");
+            clearTimeout(el._t);
+            el._t = setTimeout(() => el.classList.remove("show"), 2500);
+        }
+
+        function setStatus(msg) {
+            $("#status").textContent = msg;
+        }
+
+        function parentDir(path) {
+            const i = path.lastIndexOf("/");
+            return i === -1 ? "" : path.slice(0, i);
+        }
+
+        function baseName(path) {
+            const i = path.lastIndexOf("/");
+            return i === -1 ? path : path.slice(i + 1);
+        }
+
+        // 全路径 ("content/essays/x.md") 与相对路径 ("essays/x.md") 互转
+        function toRel(full) {
+            return full.replace(/^content\//, "");
+        }
+        function toFull(rel) {
+            return rel.startsWith("content/") ? rel : "content/" + rel;
+        }
+
+        // UTF-8 安全的 base64
+        function utf8ToBase64(str) {
+            const bytes = new TextEncoder().encode(str);
+            let bin = "";
+            bytes.forEach((b) => (bin += String.fromCharCode(b)));
+            return btoa(bin);
+        }
+
+        function base64ToUtf8(b64) {
+            const bin = atob(b64.replace(/\s/g, ""));
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            return new TextDecoder().decode(bytes);
+        }
+
+        function encPath(path) {
+            return path.split("/").map(encodeURIComponent).join("/");
+        }
+
+        // ---------- GitHub API ----------
+        function ghHeaders() {
+            return {
+                Authorization: "Bearer " + state.settings.token,
+                Accept: "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            };
+        }
+
+        async function gh(apiPath, { method = "GET", body } = {}) {
+            const url = `https://api.github.com/repos/${state.settings.owner}/${state.settings.repo}${apiPath}`;
+            const res = await fetch(url, {
+                method,
+                headers: ghHeaders(),
+                body: body ? JSON.stringify(body) : undefined,
+            });
+            let data = null;
+            try { data = await res.json(); } catch (e) { /* no body */ }
+            if (!res.ok) {
+                const msg = (data && (data.message || data.error)) || `HTTP ${res.status}`;
+                throw new Error(msg);
+            }
+            return data;
+        }
+
+        async function testConnection() {
+            const data = await gh("");
+            return data.full_name;
+        }
+
+        async function loadTree() {
+            const tree = await gh(`/git/trees/${encodeURIComponent(state.settings.branch)}?recursive=1`);
+            state.files = (tree.tree || [])
+                .filter((n) => n.type === "blob")
+                .filter((n) => n.path.startsWith("content/"))
+                .filter((n) => n.path.toLowerCase().endsWith(".md"))
+                .map((n) => ({ path: n.path, sha: n.sha }));
+            renderTree();
+        }
+
+        async function readFile(path) {
+            const data = await gh(`/contents/${encPath(path)}?ref=${encodeURIComponent(state.settings.branch)}`);
+            return { content: base64ToUtf8(data.content), sha: data.sha };
+        }
+
+        async function writeFile(path, content, sha) {
+            const body = {
+                message: `✍️ Update ${path}`,
+                content: utf8ToBase64(content),
+                branch: state.settings.branch,
+            };
+            if (sha) body.sha = sha;
+            const data = await gh(`/contents/${encPath(path)}`, { method: "PUT", body });
+            return data.content ? data.content.sha : null;
+        }
+
+        async function deleteFile(path, sha) {
+            await gh(`/contents/${encPath(path)}`, {
+                method: "DELETE",
+                body: { message: `🗑 Delete ${path}`, sha, branch: state.settings.branch },
+            });
+        }
+
+        // ---------- 文件树 ----------
+        function buildTree() {
+            const root = { children: {} };
+            for (const f of state.files) {
+                const rel = f.path.slice("content/".length);
+                const parts = rel.split("/");
+                let cur = root;
+                for (let i = 0; i < parts.length - 1; i++) {
+                    const dir = parts[i];
+                    if (!cur.children[dir]) cur.children[dir] = { dir: true, children: {} };
+                    cur = cur.children[dir];
+                }
+                const name = parts[parts.length - 1];
+                cur.children[name] = { dir: false, path: f.path, sha: f.sha };
+            }
+            return root.children;
+        }
+
+        function renderTree() {
+            const box = $("#tree");
+            box.innerHTML = "";
+            if (!state.files.length) {
+                box.innerHTML = '<div class="tree-empty">content 目录为空</div>';
+                return;
+            }
+            const ul = document.createElement("ul");
+            ul.style.cssText = "list-style:none;margin:0;padding:0;";
+            Object.values(buildTree()).forEach((node) => ul.appendChild(buildNode(node, "")));
+            box.appendChild(ul);
+        }
+
+        function buildNode(node, prefix) {
+            const li = document.createElement("li");
+            li.style.cssText = "list-style:none;margin:0;padding:0;";
+
+            if (node.dir) {
+                const full = prefix ? prefix + "/" + node.name : node.name;
+                const row = document.createElement("div");
+                row.className = "tree-item";
+                const arrow = document.createElement("span");
+                arrow.className = "arrow";
+                arrow.textContent = state.expanded.has(full) ? "▾" : "▸";
+                const icon = document.createElement("span");
+                icon.className = "icon";
+                icon.textContent = state.expanded.has(full) ? "📂" : "📁";
+                const name = document.createElement("span");
+                name.className = "name";
+                name.textContent = node.name;
+                row.append(arrow, icon, name);
+                row.addEventListener("click", () => {
+                    if (state.expanded.has(full)) {
+                        state.expanded.delete(full);
+                        const kids = li.querySelector(".tree-children");
+                        if (kids) kids.classList.add("collapsed");
+                        arrow.textContent = "▸";
+                        icon.textContent = "📁";
+                    } else {
+                        state.expanded.add(full);
+                        const kids = li.querySelector(".tree-children");
+                        if (kids) kids.classList.remove("collapsed");
+                        arrow.textContent = "▾";
+                        icon.textContent = "📂";
+                    }
+                });
+                const kids = document.createElement("div");
+                kids.className = "tree-children";
+                if (!state.expanded.has(full)) kids.classList.add("collapsed");
+                const subUl = document.createElement("ul");
+                subUl.style.cssText = "list-style:none;margin:0;padding:0;";
+                Object.keys(node.children).forEach((k) => subUl.appendChild(buildNode(node.children[k], full)));
+                kids.appendChild(subUl);
+                li.append(row, kids);
+            } else {
+                const path = node.path;
+                const row = document.createElement("div");
+                row.className = "tree-item";
+                if (state.selectedPath === path) row.classList.add("selected");
+                const arrow = document.createElement("span");
+                arrow.className = "arrow";
+                arrow.textContent = "";
+                const icon = document.createElement("span");
+                icon.className = "icon";
+                icon.textContent = "📄";
+                const name = document.createElement("span");
+                name.className = "name";
+                name.textContent = baseName(path);
+                row.append(arrow, icon, name);
+                row.addEventListener("click", () => openFile(path));
+                li.appendChild(row);
+            }
+            return li;
+        }
+
+        // ---------- 文件读写 ----------
+        async function openFile(path) {
+            if (state.dirty) {
+                const ok = await confirmDialog("未保存的修改", "当前文章有未保存的修改，先保存再切换吗？");
+                if (!ok) return;
+                const saved = await save();
+                if (!saved) return;
+            }
+            try {
+                const { content, sha } = await readFile(path);
+                state.currentPath = path;
+                state.currentSha = sha;
+                state.currentDir = parentDir(toRel(path));
+                state.selectedPath = path;
+                state.dirty = false;
+                vditor.setValue(content);
+                setStatus("已打开：" + path);
+                renderTree();
+            } catch (e) {
+                toast("打开失败：" + e.message);
+            }
+        }
+
+        async function save() {
+            if (!state.currentPath || state.saving) return;
+            state.saving = true;
+            setStatus("提交中…");
+            try {
+                const newSha = await writeFile(state.currentPath, vditor.getValue(), state.currentSha);
+                if (newSha) state.currentSha = newSha;
+                const idx = state.files.findIndex((f) => f.path === state.currentPath);
+                if (idx !== -1) state.files[idx].sha = newSha || state.files[idx].sha;
+                state.dirty = false;
+                setStatus("✅ 已发布：" + state.currentPath + "（Pages 正在自动构建…）");
+                toast("已提交并发布，Cloudflare Pages 开始构建");
+                return true;
+            } catch (e) {
+                setStatus("发布失败");
+                toast("发布失败：" + e.message);
+                return false;
+            } finally {
+                state.saving = false;
+            }
+        }
+
+        // ---------- 弹窗 ----------
+        function openModal({ title, label, value, placeholder, hint, okText = "确定" }) {
+            return new Promise((resolve) => {
+                const mask = document.createElement("div");
+                mask.className = "modal-mask";
+                mask.innerHTML = `
+                    <div class="modal">
+                        <h3>${title}</h3>
+                        <label>${label}</label>
+                        <input type="text" value="${value || ""}" placeholder="${placeholder || ""}" />
+                        ${hint ? `<div class="hint">${hint}</div>` : ""}
+                        <div class="actions">
+                            <button class="cancel">取消</button>
+                            <button class="ok">${okText}</button>
+                        </div>
+                    </div>`;
+                const input = mask.querySelector("input");
+                const cancel = () => { mask.remove(); resolve(null); };
+                const ok = () => {
+                    const v = input.value.trim();
+                    if (!v) { input.focus(); return; }
+                    mask.remove();
+                    resolve(v);
+                };
+                mask.querySelector(".cancel").addEventListener("click", cancel);
+                mask.querySelector(".ok").addEventListener("click", ok);
+                mask.addEventListener("click", (e) => { if (e.target === mask) cancel(); });
+                input.addEventListener("keydown", (e) => { if (e.key === "Enter") ok(); if (e.key === "Escape") cancel(); });
+                document.body.appendChild(mask);
+                input.focus();
+                input.select();
+            });
+        }
+
+        function confirmDialog(title, message) {
+            return new Promise((resolve) => {
+                const mask = document.createElement("div");
+                mask.className = "modal-mask";
+                mask.innerHTML = `
+                    <div class="modal">
+                        <h3>${title}</h3>
+                        <div style="font-size:13px;color:var(--text);">${message}</div>
+                        <div class="actions">
+                            <button class="cancel">取消</button>
+                            <button class="ok" style="background:#dc2626;border-color:#dc2626;color:#fff;">确定</button>
+                        </div>
+                    </div>`;
+                const close = (v) => { mask.remove(); resolve(v); };
+                mask.querySelector(".cancel").addEventListener("click", () => close(false));
+                mask.querySelector(".ok").addEventListener("click", () => close(true));
+                mask.addEventListener("click", (e) => { if (e.target === mask) close(false); });
+                document.body.appendChild(mask);
+            });
+        }
+
+        // ---------- 设置 ----------
+        function loadSettings() {
+            try {
+                state.settings = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
+            } catch (e) {
+                state.settings = null;
+            }
+        }
+
+        function saveSettingsToStorage() {
+            localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
+        }
+
+        async function showSettings() {
+            const mask = document.createElement("div");
+            mask.className = "modal-mask";
+            const s = state.settings || {};
+            mask.innerHTML = `
+                <div class="modal" style="width:460px;">
+                    <h3>⚙️ GitHub 连接设置</h3>
+                    <label>仓库（owner/name）</label>
+                    <input id="sOwner" type="text" placeholder="例如: jackyzha0/quartz" value="${s.owner ? s.owner + "/" + s.repo : ""}" />
+                    <label>分支</label>
+                    <input id="sBranch" type="text" placeholder="main" value="${s.branch || "main"}" />
+                    <label>GitHub 访问令牌（Personal Access Token）</label>
+                    <input id="sToken" type="password" placeholder="ghp_..." value="${s.token || ""}" />
+                    <div class="hint">
+                        令牌只保存在你浏览器的 localStorage 里，不会被上传到任何服务器。
+                        建议在 GitHub → Settings → Developer settings → Fine-grained tokens 创建一个<b>只授权这一个仓库</b>、
+                        权限选 <b>Contents: Read and write</b> 的令牌。
+                    </div>
+                    <div class="actions">
+                        <button class="cancel">取消</button>
+                        <button class="ok">连接并保存</button>
+                    </div>
+                </div>`;
+            const close = () => mask.remove();
+            mask.querySelector(".cancel").addEventListener("click", close);
+            mask.querySelector(".ok").addEventListener("click", async () => {
+                const ownerRepo = mask.querySelector("#sOwner").value.trim().replace(/\/+$/, "");
+                const parts = ownerRepo.split("/");
+                if (parts.length < 2) { toast("仓库格式应为 owner/name"); return; }
+                state.settings = {
+                    owner: parts[0],
+                    repo: parts.slice(1).join("/"),
+                    branch: mask.querySelector("#sBranch").value.trim() || "main",
+                    token: mask.querySelector("#sToken").value.trim(),
+                };
+                try {
+                    setStatus("正在连接 GitHub…");
+                    const fullName = await testConnection();
+                    saveSettingsToStorage();
+                    $("#repoLabel").textContent = fullName;
+                    await loadTree();
+                    setStatus("已连接：" + fullName);
+                    toast("连接成功");
+                    mask.remove();
+                } catch (e) {
+                    setStatus("连接失败");
+                    toast("连接失败：" + e.message);
+                }
+            });
+            mask.addEventListener("click", (e) => { if (e.target === mask) close(); });
+            document.body.appendChild(mask);
+        }
+
+        // ---------- 新建 / 重命名 / 删除 ----------
+        async function newFile() {
+            const value = await openModal({
+                title: "新建 Markdown 文件",
+                label: "文件路径（相对 content/，可含子目录）",
+                value: state.currentDir ? state.currentDir + "/新文章.md" : "新文章.md",
+                hint: "例如：technotes/我的笔记.md。保存时自动创建目录。",
+                okText: "创建",
+            });
+            if (!value) return;
+            const rel = toRel(value);
+            const path = rel.toLowerCase().endsWith(".md") ? rel : rel + ".md";
+            const full = toFull(path);
+            if (state.files.some((f) => f.path === full)) {
+                toast("同名文件已存在");
+                return;
+            }
+            const title = baseName(path).replace(/\.md$/i, "");
+            const date = new Date().toISOString().slice(0, 10);
+            const template = `---\ntitle: "${title}"\ndate: ${date}\ndraft: false\n---\n\n# ${title}\n\n`;
+            try {
+                const newSha = await writeFile(full, template);
+                state.files.push({ path: full, sha: newSha });
+                const dir = parentDir(path);
+                if (dir) state.expanded.add(dir);
+                await loadTree();
+                await openFile(full);
+                toast("已创建：" + path);
+            } catch (e) {
+                toast("新建失败：" + e.message);
+            }
+        }
+
+        async function renameFile() {
+            if (!state.selectedPath) { toast("请先在左侧选择一个文件或文件夹"); return; }
+            const oldPath = state.selectedPath;
+            const value = await openModal({
+                title: "重命名 / 移动",
+                label: "新的路径（相对 content/）",
+                value: oldPath,
+                okText: "确定",
+            });
+            if (!value || value === oldPath) return;
+            try {
+                const oldFull = toFull(oldPath);
+                const newFull = toFull(toRel(value));
+                if (state.files.some((f) => f.path === newFull)) {
+                    toast("目标已存在");
+                    return;
+                }
+                const { content, sha } = await readFile(oldFull);
+                const newSha = await writeFile(newFull, content);
+                await deleteFile(oldFull, sha);
+                const found = state.files.find((f) => f.path === oldFull);
+                if (found) {
+                    found.path = newFull;
+                    found.sha = newSha;
+                }
+                if (state.currentPath === oldFull) {
+                    state.currentPath = newFull;
+                    state.currentSha = newSha || null;
+                }
+                state.selectedPath = newFull;
+                const dir = parentDir(toRel(newFull));
+                if (dir) state.expanded.add(dir);
+                await loadTree();
+                toast("已重命名：" + oldPath + " → " + toRel(newFull));
+            } catch (e) {
+                toast("重命名失败：" + e.message);
+            }
+        }
+
+        async function deleteNode() {
+            if (!state.selectedPath) { toast("请先在左侧选择一个文件或文件夹"); return; }
+            const sel = toRel(state.selectedPath);
+            const full = toFull(sel);
+            const ok = await confirmDialog("删除确认", `确定要删除 <b>${sel}</b> 吗？此操作不可恢复。`);
+            if (!ok) return;
+            try {
+                const f = state.files.find((x) => x.path === full);
+                if (!f) { toast("文件不存在"); return; }
+                await deleteFile(f.path, f.sha);
+                if (state.currentPath === full) {
+                    state.currentPath = null;
+                    vditor.setValue("");
+                    setStatus("就绪");
+                }
+                state.selectedPath = null;
+                await loadTree();
+                toast("已删除：" + sel);
+            } catch (e) {
+                toast("删除失败：" + e.message);
+            }
+        }
+
+        // ---------- 初始化 ----------
+        function initVditor() {
+            vditor = new Vditor("vditor", {
+                height: "100%",
+                mode: "wysiwyg",
+                toolbar: [
+                    "emoji", "headings", "bold", "italic", "strike", "link", "|",
+                    "list", "ordered-list", "check", "outdent", "indent", "|",
+                    "quote", "line", "code", "inline-code", "|",
+                    "table", "|",
+                    "undo", "redo", "|",
+                    "edit-mode", "content-theme", "code-theme", "outline", "preview",
+                ],
+                cache: { enable: false },
+                placeholder: "先在右上角 ⚙️ 设置里连接 GitHub 仓库，然后在左侧选择文章开始编辑",
+                input: () => {
+                    if (!state.currentPath) return;
+                    state.dirty = true;
+                    setStatus("未保存修改");
+                },
+            });
+        }
+
+        function init() {
+            initVditor();
+            loadSettings();
+            if (state.settings) {
+                $("#repoLabel").textContent = state.settings.owner + "/" + state.settings.repo;
+                testConnection()
+                    .then(async (fullName) => {
+                        $("#repoLabel").textContent = fullName;
+                        setStatus("已连接：" + fullName);
+                        await loadTree();
+                    })
+                    .catch(() => {
+                        setStatus("未连接（令牌可能失效）");
+                    });
+            }
+
+            $("#btnNew").addEventListener("click", newFile);
+            $("#btnRename").addEventListener("click", renameFile);
+            $("#btnDelete").addEventListener("click", deleteNode);
+            $("#btnRefresh").addEventListener("click", loadTree);
+            $("#btnSave").addEventListener("click", save);
+            $("#btnSettings").addEventListener("click", showSettings);
+
+            document.addEventListener("keydown", (e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+                    e.preventDefault();
+                    save();
+                }
+            });
+        }
+
+        window.addEventListener("DOMContentLoaded", init);
+    </script>
+</body>
+</html>
