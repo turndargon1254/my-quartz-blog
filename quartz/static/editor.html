@@ -189,26 +189,33 @@
         }
 
         // ---------- GitHub API ----------
-        function ghHeaders() {
-            const h = {
-                Authorization: "Bearer " + state.settings.token,
-                Accept: "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            };
-            if (state.settings.proxy) {
-                h["X-GitHub-Token"] = state.settings.token;
-                delete h.Authorization;
-            }
-            return h;
+        // 默认走同域 Pages Functions 的 /github/*（推荐，随站点一起部署、无 CORS 无路由冲突）。
+        // 也可在设置里填一个绝对地址作为代理前缀，或填 https://api.github.com 直接直连。
+        function ghBase() {
+            const custom = state.settings.proxy || "";
+            if (custom) return custom.replace(/\/+$/, "");
+            return ""; // 相对路径 -> 同源 /github/...
         }
 
         function ghUri(apiPath) {
-            const base = (state.settings.apiBase || "https://api.github.com").replace(/\/+$/, "");
+            const base = ghBase();
             const api = `repos/${state.settings.owner}/${state.settings.repo}${apiPath}`;
-            if (state.settings.proxy) {
-                return `${state.settings.proxy.replace(/\/+$/, "")}/github/${api}`;
+            if (base) return `${base}/github/${api}`;
+            return `/github/${api}`;
+        }
+
+        function ghHeaders() {
+            const h = {
+                Accept: "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            };
+            if (state.settings.proxy && /^https:\/\/api\.github\.com/.test(state.settings.proxy)) {
+                h.Authorization = "Bearer " + state.settings.token;
+            } else {
+                // 经由代理（同源 Pages Functions 或自建代理）时用自定义头传递 token，交给服务端转发
+                h["X-GitHub-Token"] = state.settings.token;
             }
-            return `${base}/${api}`;
+            return h;
         }
 
         async function gh(apiPath, { method = "GET", body } = {}) {
@@ -224,14 +231,14 @@
                 throw new Error(
                     "无法连接到 GitHub API（" +
                         e.message +
-                        "）。浏览器直连 api.github.com 可能被网络/防火墙拦截，请开启 ⚙️ 设置里的“API 代理”或重试。"
+                        "）。请检查 ⚙️ 设置里的“API 代理”是否正确，或直接重试一次。"
                 );
             }
             let data = null;
             try { data = await res.json(); } catch (e) { /* no body */ }
             if (!res.ok) {
-                const msg = (data && (data.message || data.error)) || `HTTP ${res.status}`;
-                throw new Error(msg);
+                const bodyText = data ? (data.message || data.error || JSON.stringify(data)) : `HTTP ${res.status}`;
+                throw new Error(bodyText);
             }
             return data;
         }
@@ -493,13 +500,12 @@
                     <input id="sBranch" type="text" placeholder="main" value="${s.branch || "main"}" />
                     <label>GitHub 访问令牌（Personal Access Token）</label>
                     <input id="sToken" type="password" placeholder="github_pat_... / ghp_..." value="${s.token || ""}" />
-                    <label>API 代理（可选，推荐）</label>
-                    <input id="sProxy" type="text" placeholder="例如: https://www.chryit.xyz" value="${s.proxy || ""}" />
+                    <label>API 代理（留空即可，推荐）</label>
+                    <input id="sProxy" type="text" placeholder="留空 = 走本站同域 Pages Functions 的 /github/..." value="${s.proxy || ""}" />
                     <div class="hint">
-                        若浏览器无法直连 api.github.com（报 “Failed to fetch”），这里填你的站点域名，让 Cloudflare
-                        Worker 代理转发请求。<br />
-                        直连失败才需要填，填了之后把仓库根目录的 <b>worker.js</b> 部署为 Worker 并绑定 /github/* 路由即可。<br />
-                        令牌只保存在浏览器 localStorage。建议用 Fine-grained token，只授权这一个仓库、
+                        <b>留空即可</b>：自动使用本站同域 <code>/github/...</code>（配合仓库中已部署的 Pages Functions），无 CORS、无路由冲突，最稳定。<br />
+                        也可以填 <code>https://api.github.com</code> 让你浏览器直连 GitHub（网络不稳时不要用）。<br />
+                        令牌只保存在你的浏览器 localStorage。建议用 Fine-grained token，只授权这一个仓库、
                         <b>Contents: Read and write</b>。
                     </div>
                     <div class="actions">
