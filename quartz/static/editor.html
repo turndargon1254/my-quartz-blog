@@ -191,17 +191,13 @@
         // ---------- GitHub API ----------
         // 默认走同域 Pages Functions 的 /github/*（推荐，随站点一起部署、无 CORS 无路由冲突）。
         // 也可在设置里填一个绝对地址作为代理前缀，或填 https://api.github.com 直接直连。
-        function ghBase() {
-            const custom = state.settings.proxy || "";
-            if (custom) return custom.replace(/\/+$/, "");
-            return ""; // 相对路径 -> 同源 /github/...
-        }
-
         function ghUri(apiPath) {
-            const base = ghBase();
             const api = `repos/${state.settings.owner}/${state.settings.repo}${apiPath}`;
-            if (base) return `${base}/github/${api}`;
-            return `/github/${api}`;
+            const custom = state.settings.proxy || "";
+            if (!custom) return `/github/${api}`; // 同域 Pages Functions
+            const trimmed = custom.replace(/\/+$/, "");
+            if (/^https:\/\/api\.github\.com/.test(custom)) return `${trimmed}/${api}`; // 直连
+            return `${trimmed}/github/${api}`; // 自建代理
         }
 
         function ghHeaders() {
