@@ -190,20 +190,43 @@
 
         // ---------- GitHub API ----------
         function ghHeaders() {
-            return {
+            const h = {
                 Authorization: "Bearer " + state.settings.token,
                 Accept: "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
             };
+            if (state.settings.proxy) {
+                h["X-GitHub-Token"] = state.settings.token;
+                delete h.Authorization;
+            }
+            return h;
+        }
+
+        function ghUri(apiPath) {
+            const base = (state.settings.apiBase || "https://api.github.com").replace(/\/+$/, "");
+            const api = `repos/${state.settings.owner}/${state.settings.repo}${apiPath}`;
+            if (state.settings.proxy) {
+                return `${state.settings.proxy.replace(/\/+$/, "")}/github/${api}`;
+            }
+            return `${base}/${api}`;
         }
 
         async function gh(apiPath, { method = "GET", body } = {}) {
-            const url = `https://api.github.com/repos/${state.settings.owner}/${state.settings.repo}${apiPath}`;
-            const res = await fetch(url, {
-                method,
-                headers: ghHeaders(),
-                body: body ? JSON.stringify(body) : undefined,
-            });
+            const url = ghUri(apiPath);
+            let res;
+            try {
+                res = await fetch(url, {
+                    method,
+                    headers: ghHeaders(),
+                    body: body ? JSON.stringify(body) : undefined,
+                });
+            } catch (e) {
+                throw new Error(
+                    "无法连接到 GitHub API（" +
+                        e.message +
+                        "）。浏览器直连 api.github.com 可能被网络/防火墙拦截，请开启 ⚙️ 设置里的“API 代理”或重试。"
+                );
+            }
             let data = null;
             try { data = await res.json(); } catch (e) { /* no body */ }
             if (!res.ok) {
@@ -469,11 +492,15 @@
                     <label>分支</label>
                     <input id="sBranch" type="text" placeholder="main" value="${s.branch || "main"}" />
                     <label>GitHub 访问令牌（Personal Access Token）</label>
-                    <input id="sToken" type="password" placeholder="ghp_..." value="${s.token || ""}" />
+                    <input id="sToken" type="password" placeholder="github_pat_... / ghp_..." value="${s.token || ""}" />
+                    <label>API 代理（可选，推荐）</label>
+                    <input id="sProxy" type="text" placeholder="例如: https://www.chryit.xyz" value="${s.proxy || ""}" />
                     <div class="hint">
-                        令牌只保存在你浏览器的 localStorage 里，不会被上传到任何服务器。
-                        建议在 GitHub → Settings → Developer settings → Fine-grained tokens 创建一个<b>只授权这一个仓库</b>、
-                        权限选 <b>Contents: Read and write</b> 的令牌。
+                        若浏览器无法直连 api.github.com（报 “Failed to fetch”），这里填你的站点域名，让 Cloudflare
+                        Worker 代理转发请求。<br />
+                        直连失败才需要填，填了之后把仓库根目录的 <b>worker.js</b> 部署为 Worker 并绑定 /github/* 路由即可。<br />
+                        令牌只保存在浏览器 localStorage。建议用 Fine-grained token，只授权这一个仓库、
+                        <b>Contents: Read and write</b>。
                     </div>
                     <div class="actions">
                         <button class="cancel">取消</button>
@@ -491,6 +518,7 @@
                     repo: parts.slice(1).join("/"),
                     branch: mask.querySelector("#sBranch").value.trim() || "main",
                     token: mask.querySelector("#sToken").value.trim(),
+                    proxy: mask.querySelector("#sProxy").value.trim(),
                 };
                 try {
                     setStatus("正在连接 GitHub…");
