@@ -8,7 +8,7 @@ echo [2/3] Committing changes...
 git commit -m "Auto update blog"
 
 echo [3/3] Pushing to GitHub...
-git push origin main
+git push origin main --force
 
 echo.
 echo ====================================
