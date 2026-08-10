@@ -227,8 +227,7 @@ plugins:
         repo: "turndargon1254/my-quartz-blog"
         repoId: "R_kgDOTj2BuQ"
         category: "Announcements"
-        # ⚠️ 去 https://giscus.app 配置后，把"categoryId"的值替换到这里（DIC_ 开头）
-        categoryId: "DIC_kwDOJ2BuQ"
+        categoryId: "DIC_kwDOTj2Buc4DDDod"
         mapping: "pathname"
         strict: false
         reactionsEnabled: true
