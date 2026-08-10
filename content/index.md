@@ -1,12 +1,15 @@
 ---
 title: "欢迎来我的博客"
+description: "Chryit 的博客 —— 折腾电脑的笔记、玩 MC 服务器的记录、偶尔冒出来的想法。用 Obsidian + Quartz 打造的数字花园。"
+tags: [博客, 首页]
 date: 2026-07-26
 draft: false
+aliases: [首页, home]
 ---
 
 嘿，来了啊。
 
-这个博客是我放东西的地方——折腾电脑的笔记、玩MC服务器的记录、偶尔冒出来的想法、看到有意思的东西随手记两笔。
+这个博客是我放东西的地方——折腾电脑的笔记、玩 MC 服务器的记录、偶尔冒出来的想法、看到有意思的东西随手记两笔。
 
 乱七八糟的什么都有，但都算是我真正花过时间的事。
 
@@ -15,19 +18,23 @@ draft: false
 ## 这里有什么
 
 ### 💻 电脑/服务器相关
+
 计算机系统、软件配置、工具链折腾，还有踩过的各种坑。
-* [[technotes/index|📂 技术笔记]]
+
+- [[technotes/index|📂 技术笔记]]
 
 ### 📝 随便写写
+
 读书、生活、一些不成体系的想法。
-* [[essays/index|📂 随笔]]
+
+- [[essays/index|📂 随笔]]
 
 ---
 
 ## 挑几篇看看
 
-* [[commend/aboutsite|这个博客是怎么搭的]]——不懂代码怎么用AI搞出个网站
-* [[commend/aboutme|关于我]]——高二学生，MC服主，爱折腾电脑
+- [[commend/aboutsite|这个博客是怎么搭的]]——不懂代码怎么用 AI 搞出个网站
+- [[commend/aboutme|关于我]]——高二学生，MC 服主，爱折腾电脑
 
 ---
 
@@ -35,10 +42,10 @@ draft: false
 
 其实就这几样：
 
-* **Obsidian**：写笔记
-* **Quartz**：把笔记变成网站
-* **Cloudflare Pages**：托管和自动部署
-* **GitHub**：存东西
+- **Obsidian**：写笔记
+- **Quartz**：把笔记变成网站
+- **Cloudflare Pages**：托管和自动部署
+- **GitHub**：存东西
 
 AI 帮着调代码，我来写内容和做决定。
 

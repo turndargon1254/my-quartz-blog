@@ -1,3 +1,52 @@
 @use "./variables.scss" as *;
 
-// put your custom CSS here!
+// ===== 自定义样式 =====
+
+// 文章内部链接更明显一点
+article a.internal-link {
+  text-decoration: underline;
+  text-decoration-color: var(--secondary);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+// 首页分类卡片
+.toc-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border: 1px solid var(--lightgray);
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  background: rgba(255, 255, 255, 0.5);
+}
+html.dark .toc-card {
+  background: rgba(255, 255, 255, 0.03);
+}
+.toc-card a {
+  color: var(--secondary);
+  font-weight: 500;
+}
+
+// 标签的圆角样式
+.tags > li > a.tag-link {
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  background: var(--lightgray);
+  font-size: 0.75rem;
+}
+
+// 阅读正文宽度内的代码块圆角
+article pre {
+  border-radius: 10px;
+}
+
+// 自定义滚动条（Webkit）
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--gray);
+  border-radius: 5px;
+}
