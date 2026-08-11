@@ -1,5 +1,5 @@
 ---
-title: "使用系统剪切板与wechat-decrypt实现只在QQ出现过的'群服互联'"
+title: "使用系统剪切板与wechat-decrypt实现'群服互联'"
 tags: [技术笔记,Minecraft, Linux, 自动化, Python, 架构设计, 踩坑复盘,群服互联]
 date: 2026-08-03
 draft: false
@@ -1511,6 +1511,5 @@ tail -f logs/mcmain.log
 ---
 
 > 🔗 **相关链接**：
-> * 返回 [[index|🌿 数字花园首页]]
 > * 项目源码： [wechat-decrypt项目](https://gitcode.com/gcw_xlkU87N4/wechat-decrypt)
 > * 最终效果：![效果图](https://raw.gitcode.com/turndargon1254/sdfzmc/raw/main/mcresult.png)
