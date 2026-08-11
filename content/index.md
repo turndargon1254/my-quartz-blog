@@ -1,6 +1,6 @@
 ---
 title: "欢迎来我的博客"
-description: "Chryit 的博客 —— 折腾电脑的笔记、玩 MC 服务器的记录、偶尔冒出来的想法。用 Obsidian + Quartz 打造的数字花园。"
+description: "樱桃园的博客 —— 折腾电脑的笔记、玩 MC 服务器的记录、偶尔冒出来的想法。用 Obsidian + Quartz 打造的数字花园。"
 tags: [博客, 首页]
 date: 2026-07-26
 draft: false
