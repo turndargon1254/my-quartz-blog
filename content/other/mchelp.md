@@ -1,6 +1,6 @@
 ---
 title: "群服互联指令列表"
-tags: [,Minecraft, 自动化,群服互联]
+tags: [Minecraft, 自动化,群服互联]
 date: 2026-08-11
 draft: false
 ---
